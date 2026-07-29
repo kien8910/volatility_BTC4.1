@@ -20,6 +20,7 @@ def _batch(batch_size: int = 1) -> dict[str, torch.Tensor]:
         "sentiment_fast": torch.randn(batch_size, 30, 3),
         "daily_scalars": torch.randn(batch_size, 30, 11),
         "head_scalars": torch.randn(batch_size, 2),
+        "har_scalars": torch.randn(batch_size, 3),
         "true_log_rv": torch.full((batch_size,), -10.0, dtype=torch.float64),
     }
 
@@ -59,6 +60,31 @@ def test_forecast_head_stays_float32_inside_autocast():
     assert output["forecast_z"].dtype == torch.float32
     assert output["predicted_log_rv"].dtype == torch.float64
     assert output["predicted_rv"].dtype == torch.float64
+
+
+def test_locked_spike_diagnostic_variants_forward_and_initialize():
+    config = MainPilotConfig()
+    counts = {}
+    for variant in ("main", "market_only", "hybrid_har"):
+        built = build_model(
+            config,
+            target_mean=-9.0,
+            target_scale=1.5,
+            unconditional_mean_rv=2.5e-4,
+            variant=variant,
+        )
+        built.model.eval()
+        with torch.no_grad():
+            output = built.model(_batch(2))
+        assert built.variant == variant
+        assert 20_000 <= built.parameter_count <= 60_000
+        np.testing.assert_allclose(
+            output["predicted_rv"].numpy(),
+            np.full(2, 2.5e-4),
+            rtol=1e-6,
+        )
+        counts[variant] = built.parameter_count
+    assert counts["market_only"] < counts["main"] < counts["hybrid_har"]
 
 
 def test_all_masked_news_keys_are_rejected_and_null_must_be_unmasked():

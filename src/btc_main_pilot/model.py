@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from torch import nn
 
 from .config import MainPilotConfig
+
+ModelVariant = Literal["main", "market_only", "hybrid_har"]
 
 
 def sinusoidal_encoding(length: int, d_model: int, device: torch.device) -> torch.Tensor:
@@ -98,10 +100,16 @@ class MainPatchTST(nn.Module):
         target_scale: float,
         unconditional_mean_rv: float,
         forecast_queries: int,
+        variant: ModelVariant = "main",
     ):
         super().__init__()
+        if variant not in {"main", "market_only", "hybrid_har"}:
+            raise ValueError(f"Unsupported model variant: {variant}")
         d = config.d_model
         self.config = config
+        self.variant = variant
+        self.uses_news = variant != "market_only"
+        self.uses_har = variant == "hybrid_har"
         self.forecast_query_count = forecast_queries
         self.register_buffer(
             "target_mean", torch.tensor(float(target_mean), dtype=torch.float64)
@@ -124,29 +132,40 @@ class MainPatchTST(nn.Module):
         )
         self.channel_gate = nn.Linear(d, 1)
 
-        slow_fast_input = config.pca_dim + 3
-        self.news_slow_fast_projection = nn.Linear(slow_fast_input, d)
-        self.news_scalar_projection = nn.Linear(config.daily_scalars, d, bias=False)
-        self.news_type_embedding = nn.Embedding(2, d)
-        self.news_blocks = nn.ModuleList(
-            [
-                PreNormSelfAttentionBlock(
-                    d, config.attention_heads, config.ffn_dim, config.dropout
-                )
-                for _ in range(config.news_layers)
-            ]
-        )
-        self.null_news_token = nn.Parameter(torch.zeros(1, 1, d))
-        nn.init.normal_(self.null_news_token, std=0.02)
-
-        self.cross_blocks = nn.ModuleList(
-            [
-                CrossAttentionBlock(
-                    d, config.attention_heads, config.ffn_dim, config.dropout
-                )
-                for _ in range(config.cross_layers)
-            ]
-        )
+        if self.uses_news:
+            slow_fast_input = config.pca_dim + 3
+            self.news_slow_fast_projection: nn.Linear | None = nn.Linear(
+                slow_fast_input, d
+            )
+            self.news_scalar_projection: nn.Linear | None = nn.Linear(
+                config.daily_scalars, d, bias=False
+            )
+            self.news_type_embedding: nn.Embedding | None = nn.Embedding(2, d)
+            self.news_blocks = nn.ModuleList(
+                [
+                    PreNormSelfAttentionBlock(
+                        d, config.attention_heads, config.ffn_dim, config.dropout
+                    )
+                    for _ in range(config.news_layers)
+                ]
+            )
+            self.null_news_token = nn.Parameter(torch.zeros(1, 1, d))
+            nn.init.normal_(self.null_news_token, std=0.02)
+            self.cross_blocks = nn.ModuleList(
+                [
+                    CrossAttentionBlock(
+                        d, config.attention_heads, config.ffn_dim, config.dropout
+                    )
+                    for _ in range(config.cross_layers)
+                ]
+            )
+        else:
+            self.news_slow_fast_projection = None
+            self.news_scalar_projection = None
+            self.news_type_embedding = None
+            self.news_blocks = nn.ModuleList()
+            self.register_parameter("null_news_token", None)
+            self.cross_blocks = nn.ModuleList()
         self.forecast_queries = nn.Parameter(torch.empty(1, forecast_queries, d))
         nn.init.normal_(self.forecast_queries, std=0.02)
         self.pool_attention = nn.MultiheadAttention(
@@ -159,8 +178,11 @@ class MainPatchTST(nn.Module):
             self.pool_projection = nn.Identity()
         else:
             raise ValueError("Forecast query count must be exactly 4 or 1")
+        head_scalar_count = 0 if variant == "market_only" else 2
+        if self.uses_har:
+            head_scalar_count += 3
         self.forecast_head = nn.Sequential(
-            nn.Linear(d + 2, 32),
+            nn.Linear(d + head_scalar_count, 32),
             nn.GELU(),
             nn.Dropout(config.dropout),
             nn.Linear(32, 1),
@@ -203,6 +225,13 @@ class MainPatchTST(nn.Module):
         return torch.sum(encoded * gate.unsqueeze(-1), dim=1)
 
     def _encode_news(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        if (
+            self.news_slow_fast_projection is None
+            or self.news_scalar_projection is None
+            or self.news_type_embedding is None
+            or self.null_news_token is None
+        ):
+            raise RuntimeError("News encoder called by a market-only variant")
         semantic_slow = batch["semantic_slow"]
         semantic_fast = batch["semantic_fast"]
         sentiment_slow = batch["sentiment_slow"]
@@ -240,9 +269,10 @@ class MainPatchTST(nn.Module):
             scale_id=1,
         )
         market = torch.cat([fine, coarse], dim=1)
-        news = self._encode_news(batch)
-        for block in self.cross_blocks:
-            market = block(market, news)
+        if self.uses_news:
+            news = self._encode_news(batch)
+            for block in self.cross_blocks:
+                market = block(market, news)
         queries = self.forecast_queries.expand(market.shape[0], -1, -1)
         pooled, _ = self.pool_attention(
             queries, market, market, need_weights=False
@@ -252,7 +282,12 @@ class MainPatchTST(nn.Module):
         else:
             pooled = pooled[:, 0, :]
         latent = self.pool_projection(pooled)
-        forecast_input = torch.cat([latent, batch["head_scalars"]], dim=-1)
+        forecast_parts = [latent]
+        if self.uses_news:
+            forecast_parts.append(batch["head_scalars"])
+        if self.uses_har:
+            forecast_parts.append(batch["har_scalars"])
+        forecast_input = torch.cat(forecast_parts, dim=-1)
         # Exact QLIKE is evaluated in float64. Keep the immediately preceding
         # forecast head in float32 so GradScaler's scaled derivative does not
         # overflow at an autocast float16 output boundary.
@@ -279,6 +314,7 @@ class BuiltModel:
     model: MainPatchTST
     parameter_count: int
     forecast_queries: int
+    variant: ModelVariant
 
 
 def build_model(
@@ -286,6 +322,7 @@ def build_model(
     target_mean: float,
     target_scale: float,
     unconditional_mean_rv: float,
+    variant: ModelVariant = "main",
 ) -> BuiltModel:
     model = MainPatchTST(
         config,
@@ -293,6 +330,7 @@ def build_model(
         target_scale,
         unconditional_mean_rv,
         forecast_queries=4,
+        variant=variant,
     )
     count = trainable_parameter_count(model)
     queries = 4
@@ -303,6 +341,7 @@ def build_model(
             target_scale,
             unconditional_mean_rv,
             forecast_queries=1,
+            variant=variant,
         )
         count = trainable_parameter_count(model)
         queries = 1
@@ -310,7 +349,12 @@ def build_model(
         raise AssertionError(
             f"Trainable parameter count {count} outside locked 20k-60k budget"
         )
-    return BuiltModel(model=model, parameter_count=count, forecast_queries=queries)
+    return BuiltModel(
+        model=model,
+        parameter_count=count,
+        forecast_queries=queries,
+        variant=variant,
+    )
 
 
 def attention_backend_metadata(device: torch.device) -> dict[str, Any]:

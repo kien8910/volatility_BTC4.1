@@ -101,6 +101,18 @@ class RVWindowDataset(Dataset):
         true_log_rv = self.market.log_rv[target_index]
         if not np.isfinite(true_log_rv):
             raise FloatingPointError(f"Invalid target RV on {target}")
+        har_lags = self.market.log_rv[target_index - 22 : target_index]
+        if len(har_lags) != 22 or not np.isfinite(har_lags).all():
+            raise FloatingPointError(f"Invalid HAR lag window on {target}")
+        har_scalars = np.asarray(
+            [
+                har_lags[-1],
+                np.mean(har_lags[-5:]),
+                np.mean(har_lags),
+            ],
+            dtype=np.float64,
+        )
+        har_scalars = (har_scalars - self.target_mean) / self.target_scale
         return {
             "fine": torch.from_numpy(fine),
             "fine_patch_logrv": torch.from_numpy(fine_logrv),
@@ -126,8 +138,8 @@ class RVWindowDataset(Dataset):
             "head_scalars": torch.tensor(
                 [latest_scalars[0], latest_scalars[-1]], dtype=torch.float32
             ),
+            "har_scalars": torch.from_numpy(har_scalars.astype(np.float32)),
             "true_log_rv": torch.tensor(true_log_rv, dtype=torch.float64),
             "true_rv": torch.tensor(self.market.rv[target_index], dtype=torch.float64),
             "target_date": target.strftime("%Y-%m-%d"),
         }
-

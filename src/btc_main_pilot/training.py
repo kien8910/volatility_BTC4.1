@@ -320,6 +320,7 @@ def train_model(
             history.append(row)
             metadata = {
                 "fold": fold_name,
+                "model_variant": model.variant,
                 "seed": config.seed,
                 "objective": config.training_loss,
                 "preprocessor_hash": preprocessor_hash,

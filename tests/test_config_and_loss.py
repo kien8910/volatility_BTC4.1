@@ -42,7 +42,11 @@ def test_locked_training_configuration():
 def test_scheduler_lock_hash_ignores_only_runtime_batching_controls():
     config = MainPilotConfig()
     runtime_changed = replace(
-        config, physical_batch_size=8, num_workers=4, output_dir="another/output"
+        config,
+        physical_batch_size=8,
+        num_workers=4,
+        output_dir="another/output",
+        embedding_cache_path="another/cache.sqlite",
     )
     assert _locked_config_hash(config) == _locked_config_hash(runtime_changed)
     hyperparameter_changed = replace(config, learning_rate=1e-4)

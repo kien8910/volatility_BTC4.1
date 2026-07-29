@@ -25,6 +25,33 @@ FOLD_1 = Fold(
     "2021-10-30",
     "2022-04-27",
 )
+FOLD_2 = Fold(
+    "fold_2",
+    "2018-01-01",
+    "2022-01-27",
+    "2022-01-28",
+    "2022-04-27",
+    "2022-04-28",
+    "2022-10-24",
+)
+FOLD_3 = Fold(
+    "fold_3",
+    "2018-01-01",
+    "2022-07-26",
+    "2022-07-27",
+    "2022-10-24",
+    "2022-10-25",
+    "2023-04-22",
+)
+FOLD_4 = Fold(
+    "fold_4",
+    "2018-01-01",
+    "2023-01-22",
+    "2023-01-23",
+    "2023-04-22",
+    "2023-04-23",
+    "2023-10-19",
+)
 FOLD_5 = Fold(
     "fold_5",
     "2018-01-01",
@@ -35,6 +62,13 @@ FOLD_5 = Fold(
     "2024-04-16",
 )
 
+SPIKE_DIAGNOSTIC_FOLDS = (FOLD_1, FOLD_2, FOLD_3, FOLD_4)
+SPIKE_DIAGNOSTIC_VARIANTS = (
+    "main",
+    "market_only",
+    "hybrid_har",
+)
+
 
 @dataclass
 class MainPilotConfig:
@@ -42,6 +76,7 @@ class MainPilotConfig:
     market_path: str = "data/BTCUSDT_5min_2018_2025_present.csv"
     news_path: str = "data/news_clusters.json"
     output_dir: str = "outputs/main_pilot"
+    embedding_cache_path: str | None = None
     research_start: str = "2018-01-01"
     research_end: str = "2025-06-30"
     development_end: str = "2024-04-16"
@@ -123,7 +158,10 @@ class MainPilotConfig:
         return Path(self.output_dir)
 
     def validate(self) -> None:
-        assert self.profile == "main-pilot", "Only profile main-pilot is implemented"
+        assert self.profile in {
+            "main-pilot",
+            "development-spike-diagnostic",
+        }
         assert self.seed == 11
         assert self.pca_dim == 8
         assert self.optimizer == "AdamW"

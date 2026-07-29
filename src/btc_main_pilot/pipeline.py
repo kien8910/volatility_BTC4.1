@@ -51,6 +51,7 @@ def _locked_config_hash(config: MainPilotConfig) -> str:
     payload = config.to_dict()
     for runtime_key in [
         "output_dir",
+        "embedding_cache_path",
         "physical_batch_size",
         "num_workers",
         "smoke",
@@ -118,8 +119,13 @@ def _prepare_news(
         if smoke
         else config.sentiment_model
     )
+    cache_path = (
+        output_dir / "cache" / "article_embeddings.sqlite"
+        if smoke or config.embedding_cache_path is None
+        else Path(config.embedding_cache_path)
+    )
     cache = EmbeddingCache(
-        output_dir / "cache" / "article_embeddings.sqlite",
+        cache_path,
         cache_model_semantic,
         cache_model_sentiment,
     )

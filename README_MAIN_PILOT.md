@@ -1,7 +1,8 @@
 # BTC PatchTST–BGE–FinBERT main-pilot
 
-This package implements only the `main-pilot` workflow defined by
-`BTC_PATCHTST_FINBERT_MODEL_SPEC.md`.
+This package implements the `main-pilot` workflow defined by
+`BTC_PATCHTST_FINBERT_MODEL_SPEC.md` plus a separately labeled,
+development-only spike diagnostic authorized after the main-pilot result.
 
 It performs one Fold-1 scheduler pilot (core/validation only), locks `H_cos`,
 deletes the pilot checkpoint, retrains the primary model on Fold 5 with seed
@@ -64,3 +65,44 @@ prevents BGE/FinBERT from being recomputed.
 Smoke output is isolated under `outputs/main_pilot/smoke` and uses a
 deterministic 768-dimensional test double for BGE/FinBERT. It is never a
 research result and never creates the main `scheduler_horizon.json`.
+
+## Development-only spike diagnostic
+
+The diagnostic runs exactly 12 deep experiments: Fold 1-4, seed 11, exact
+QLIKE, crossed with `main`, `market_only`, and `hybrid_har`. It reuses the
+successful main-pilot `H_cos` without relocking it. Fold 5, final test, COVID,
+MCS, loss reweighting, spike oversampling, and five-seed inference are not
+opened or run.
+
+Run a CPU-safe three-variant smoke test:
+
+```bash
+PYTHONPATH=src python -m btc_main_pilot \
+  --profile development-spike-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/spike_diagnostic \
+  --smoke \
+  --no-resume
+```
+
+Run all 12 experiments on a CUDA server:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-spike-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/spike_diagnostic \
+  --embedding-cache outputs/main_pilot/cache/article_embeddings.sqlite \
+  --scheduler-path outputs/main_pilot/scheduler_horizon.json \
+  --physical-batch-size 32 \
+  --num-workers 4 \
+  --resume \
+  --confirm-news-filter-reviewed
+```
+
+The runner writes per-fold predictions/metrics, pooled Fold 1-4 results,
+worst-loss days, and the predeclared 3-of-4-fold spike screen under
+`outputs/spike_diagnostic`. A completed run is skipped safely by `--resume`;
+partial compatible checkpoints resume normally.
