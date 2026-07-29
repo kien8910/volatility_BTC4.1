@@ -166,7 +166,12 @@ def train_model(
             f"{fold_name}: T_floor={floor_step} must exceed warmup=100"
         )
     scheduler = _scheduler(optimizer, config, floor_step)
-    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        init_scale=config.amp_grad_scaler_initial_scale,
+        growth_interval=config.amp_grad_scaler_growth_interval,
+        enabled=device.type == "cuda",
+    )
     accumulation = max(
         1, math.ceil(config.effective_batch_size / config.physical_batch_size)
     )
@@ -239,7 +244,10 @@ def train_model(
                         batch_index,
                         loss,
                     )
-                    raise FloatingPointError("Training loss is NaN/Inf")
+                    raise FloatingPointError(
+                        f"Training loss is NaN/Inf at epoch={epoch} "
+                        f"batch={batch_index}"
+                    )
                 scaled_loss = loss / accumulation
                 scaler.scale(scaled_loss).backward()
                 batch_size = int(batch["true_log_rv"].numel())
@@ -265,14 +273,17 @@ def train_model(
                             epoch,
                             batch_index,
                         )
-                        raise FloatingPointError("Gradient contains NaN/Inf")
+                        raise FloatingPointError(
+                            f"Gradient contains NaN/Inf at epoch={epoch} "
+                            f"batch={batch_index} amp_scale={scaler.get_scale():.1f}"
+                        )
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
                 logger.info(
                     "TRAIN | fold=%s epoch=%03d/%03d batch=%04d/%04d "
-                    "train_qlike=%.8f lr=%.8g grad_norm=%s",
+                    "train_qlike=%.8f lr=%.8g grad_norm=%s amp_scale=%.1f",
                     fold_name,
                     epoch,
                     max_epochs,
@@ -283,6 +294,7 @@ def train_model(
                     f"{last_gradient_norm:.6f}"
                     if np.isfinite(last_gradient_norm)
                     else "pending",
+                    scaler.get_scale(),
                 )
             validation = evaluate_loader(
                 model, validation_loader, device, max_batches=max_eval_batches
@@ -301,6 +313,7 @@ def train_model(
                 "validation_qlike": validation,
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "gradient_norm": last_gradient_norm,
+                "amp_scale": scaler.get_scale(),
                 "improved": improved,
                 "stale_epochs": stale_epochs,
             }
@@ -327,6 +340,14 @@ def train_model(
                     "patience": config.patience,
                     "min_delta": config.min_delta,
                     "gradient_clip_norm": config.gradient_clip_norm,
+                    "amp_dtype": "float16_on_cuda",
+                    "forecast_head_dtype": "float32",
+                    "amp_grad_scaler_initial_scale": (
+                        config.amp_grad_scaler_initial_scale
+                    ),
+                    "amp_grad_scaler_growth_interval": (
+                        config.amp_grad_scaler_growth_interval
+                    ),
                     "effective_batch_size": config.effective_batch_size,
                 },
             }
@@ -468,12 +489,15 @@ def scheduler_payload(
     e_pilot: int,
     h_cos: int,
     config_hash: str,
+    pilot_early_stopped: bool,
 ) -> dict[str, Any]:
     return {
         "H_cos": int(h_cos),
         "E_pilot": int(e_pilot),
         "config_hash": config_hash,
         "locked_from": "fold_1_core_validation_only_seed_11_exact_qlike",
+        "pilot_completed_without_numerical_failure": True,
+        "pilot_early_stopped": bool(pilot_early_stopped),
         "pilot_checkpoint_disposition": "destroyed_after_horizon_lock",
         "created_utc": utc_now(),
     }

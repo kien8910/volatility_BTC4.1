@@ -101,6 +101,8 @@ class MainPilotConfig:
     patience: int = 20
     min_delta: float = 1e-5
     gradient_clip_norm: float = 1.0
+    amp_grad_scaler_initial_scale: float = 1024.0
+    amp_grad_scaler_growth_interval: int = 2000
     effective_batch_size: int = 32
     physical_batch_size: int = 32
     num_workers: int = 0
@@ -131,6 +133,8 @@ class MainPilotConfig:
         assert self.max_epochs == 200
         assert self.patience == 20
         assert self.gradient_clip_norm == 1.0
+        assert self.amp_grad_scaler_initial_scale == 1024.0
+        assert self.amp_grad_scaler_growth_interval == 2000
         assert self.training_loss == "exact_qlike"
         assert self.fine_patch_length == 12 and self.coarse_patch_length == 72
         assert self.fine_lookback_days == 7 and self.coarse_lookback_days == 60

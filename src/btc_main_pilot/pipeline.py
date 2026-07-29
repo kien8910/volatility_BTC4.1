@@ -308,6 +308,19 @@ def _initialization_assertion(
         )
 
 
+def _require_numerically_successful(
+    training_result: Any,
+    stage: str,
+) -> None:
+    if training_result.numerical_failure:
+        raise RuntimeError(
+            f"{stage} failed numerically: {training_result.failure_reason}. "
+            "Available diagnostic artifacts/checkpoints were preserved, but no "
+            "scheduler lock, OOS prediction, baseline comparison, or metrics "
+            "may be produced."
+        )
+
+
 def _report(
     deep_predictions: pd.DataFrame,
     baseline_results: list[Any],
@@ -318,6 +331,7 @@ def _report(
     output_dir: Path,
     logger: logging.Logger,
 ) -> dict[str, Any]:
+    _require_numerically_successful(training_result, "Fold 5 training")
     prediction_dir = output_dir / "predictions"
     metrics_dir = output_dir / "metrics"
     prediction_dir.mkdir(parents=True, exist_ok=True)
@@ -521,6 +535,7 @@ def run_smoke(
         max_train_batches=smoke_config.smoke_max_train_batches,
         max_eval_batches=smoke_config.smoke_max_eval_batches,
     )
+    _require_numerically_successful(result, "Smoke training")
     predictions = predict_dataset(
         built.model,
         test,
@@ -629,6 +644,11 @@ def run_main_pilot(
             raise RuntimeError(
                 "Existing scheduler_horizon.json config hash differs; do not silently relock H_cos"
             )
+        if schedule.get("pilot_completed_without_numerical_failure") is not True:
+            raise RuntimeError(
+                "Existing scheduler_horizon.json does not certify a numerically "
+                "successful Fold-1 pilot; it cannot be reused"
+            )
         logger.info(
             "STEP 3/7 | Reuse already locked scheduler H_cos=%d", schedule["H_cos"]
         )
@@ -686,11 +706,19 @@ def run_main_pilot(
             device=device,
             resume=resume,
         )
+        _require_numerically_successful(
+            pilot_result, "Fold 1 scheduler pilot"
+        )
         e_pilot = pilot_result.epochs_run
         h_cos = max(10, 5 * math.ceil(e_pilot / 5))
         if not pilot_result.early_stopped and e_pilot >= config.max_epochs:
             h_cos = 200
-        schedule = scheduler_payload(e_pilot, h_cos, config_hash)
+        schedule = scheduler_payload(
+            e_pilot,
+            h_cos,
+            config_hash,
+            pilot_early_stopped=pilot_result.early_stopped,
+        )
         write_json(scheduler_path, schedule)
         shutil.rmtree(pilot_dir)
         if pilot_dir.exists():
@@ -748,6 +776,7 @@ def run_main_pilot(
         device=device,
         resume=resume,
     )
+    _require_numerically_successful(training_result, "Fold 5 training")
     logger.info("STEP 6/7 | OOS Fold 5 prediction and locked baselines")
     deep_predictions = predict_dataset(
         built_main.model,

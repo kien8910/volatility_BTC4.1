@@ -50,6 +50,17 @@ If batch 32 exceeds GPU memory, reduce only `--physical-batch-size` (for
 example to 8). Gradient accumulation retains the locked effective batch size
 of 32.
 
+The exact-QLIKE path keeps the forecast head in FP32 while the attention
+branches use CUDA FP16 autocast. AMP gradient scaling starts at 1024 and is
+recorded in checkpoint metadata. Any non-finite pilot gradient aborts before
+`scheduler_horizon.json` is created; any non-finite Fold-5 gradient aborts
+before OOS predictions or metrics are written.
+
+After upgrading from a run that ended with `numerical_failure=true`, archive
+the old scheduler/checkpoint/prediction/metrics artifacts before restarting.
+Keep `outputs/main_pilot/cache/article_embeddings.sqlite`: it remains valid and
+prevents BGE/FinBERT from being recomputed.
+
 Smoke output is isolated under `outputs/main_pilot/smoke` and uses a
 deterministic 768-dimensional test double for BGE/FinBERT. It is never a
 research result and never creates the main `scheduler_horizon.json`.

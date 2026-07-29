@@ -43,6 +43,24 @@ def test_model_budget_shapes_and_unconditional_initialization():
     )
 
 
+def test_forecast_head_stays_float32_inside_autocast():
+    config = MainPilotConfig()
+    built = build_model(
+        config,
+        target_mean=-9.0,
+        target_scale=1.5,
+        unconditional_mean_rv=2.5e-4,
+    )
+    built.model.eval()
+    with torch.no_grad(), torch.autocast(
+        device_type="cpu", dtype=torch.bfloat16
+    ):
+        output = built.model(_batch(1))
+    assert output["forecast_z"].dtype == torch.float32
+    assert output["predicted_log_rv"].dtype == torch.float64
+    assert output["predicted_rv"].dtype == torch.float64
+
+
 def test_all_masked_news_keys_are_rejected_and_null_must_be_unmasked():
     block = CrossAttentionBlock(32, 4, 64, 0.1)
     query = torch.randn(2, 5, 32)

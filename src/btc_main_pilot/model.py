@@ -253,7 +253,11 @@ class MainPatchTST(nn.Module):
             pooled = pooled[:, 0, :]
         latent = self.pool_projection(pooled)
         forecast_input = torch.cat([latent, batch["head_scalars"]], dim=-1)
-        forecast_z = self.forecast_head(forecast_input).squeeze(-1)
+        # Exact QLIKE is evaluated in float64. Keep the immediately preceding
+        # forecast head in float32 so GradScaler's scaled derivative does not
+        # overflow at an autocast float16 output boundary.
+        with torch.autocast(device_type=forecast_input.device.type, enabled=False):
+            forecast_z = self.forecast_head(forecast_input.float()).squeeze(-1)
         predicted_log_rv = (
             self.target_mean + self.target_scale * forecast_z.double()
         )
@@ -333,4 +337,3 @@ def attention_backend_metadata(device: torch.device) -> dict[str, Any]:
     else:
         metadata["selected_backend"] = "CPU math attention"
     return metadata
-

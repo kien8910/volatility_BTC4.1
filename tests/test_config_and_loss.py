@@ -20,6 +20,8 @@ def test_locked_training_configuration():
     assert config.max_epochs == 200
     assert config.patience == 20
     assert config.gradient_clip_norm == 1.0
+    assert config.amp_grad_scaler_initial_scale == 1024.0
+    assert config.amp_grad_scaler_growth_interval == 2000
     assert config.training_loss == "exact_qlike"
     assert config.seed == 11
     assert config.pca_dim == 8
