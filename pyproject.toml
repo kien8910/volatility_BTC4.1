@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btc-main-pilot"
+version = "0.1.0"
+description = "Leakage-safe PatchTST + BGE + FinBERT BTC realized-variance main-pilot"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "scikit-learn==1.7.2",
+  "torch>=2.2",
+  "transformers>=4.40",
+  "matplotlib>=3.8",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+btc-main-pilot = "btc_main_pilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+

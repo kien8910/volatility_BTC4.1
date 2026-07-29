@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class Fold:
+    name: str
+    core_start: str
+    core_end: str
+    validation_start: str
+    validation_end: str
+    test_start: str
+    test_end: str
+
+
+FOLD_1 = Fold(
+    "fold_1",
+    "2018-01-01",
+    "2021-07-31",
+    "2021-08-01",
+    "2021-10-29",
+    "2021-10-30",
+    "2022-04-27",
+)
+FOLD_5 = Fold(
+    "fold_5",
+    "2018-01-01",
+    "2023-07-21",
+    "2023-07-22",
+    "2023-10-19",
+    "2023-10-20",
+    "2024-04-16",
+)
+
+
+@dataclass
+class MainPilotConfig:
+    profile: str = "main-pilot"
+    market_path: str = "data/BTCUSDT_5min_2018_2025_present.csv"
+    news_path: str = "data/news_clusters.json"
+    output_dir: str = "outputs/main_pilot"
+    research_start: str = "2018-01-01"
+    research_end: str = "2025-06-30"
+    development_end: str = "2024-04-16"
+    seed: int = 11
+
+    semantic_model: str = "BAAI/bge-base-en-v1.5"
+    sentiment_model: str = "ProsusAI/finbert"
+    embedding_dim: int = 768
+    max_tokens: int = 512
+    embedding_batch_size: int = 32
+    pca_dim: int = 8
+    slow_alpha: float = 2.0 / 31.0
+
+    fine_lookback_days: int = 7
+    fine_patch_length: int = 12
+    coarse_lookback_days: int = 60
+    coarse_patch_length: int = 72
+    news_lookback_days: int = 30
+    bars_per_day: int = 288
+    channels: int = 7
+    daily_scalars: int = 11
+    epsilon_r: float = 1e-12
+    epsilon_rv: float = 1e-12
+    scaler_epsilon: float = 1e-8
+
+    d_model: int = 32
+    attention_heads: int = 4
+    patch_layers: int = 2
+    news_layers: int = 1
+    cross_layers: int = 1
+    ffn_dim: int = 64
+    forecast_queries: int = 4
+    dropout: float = 0.1
+    parameter_budget: int = 60_000
+
+    optimizer: str = "AdamW"
+    learning_rate: float = 3e-4
+    min_learning_rate: float = 3e-6
+    adam_betas: tuple[float, float] = (0.9, 0.999)
+    adam_epsilon: float = 1e-8
+    weight_decay: float = 1e-4
+    warmup_steps: int = 100
+    provisional_horizon_epochs: int = 200
+    max_epochs: int = 200
+    patience: int = 20
+    min_delta: float = 1e-5
+    gradient_clip_norm: float = 1.0
+    effective_batch_size: int = 32
+    physical_batch_size: int = 32
+    num_workers: int = 0
+    training_loss: str = "exact_qlike"
+
+    fold_1: Fold = field(default_factory=lambda: FOLD_1)
+    fold_5: Fold = field(default_factory=lambda: FOLD_5)
+
+    smoke: bool = False
+    smoke_start: str = "2018-01-01"
+    smoke_end: str = "2018-05-31"
+    smoke_max_train_batches: int = 2
+    smoke_max_eval_batches: int = 2
+    smoke_epochs: int = 2
+
+    @property
+    def output_path(self) -> Path:
+        return Path(self.output_dir)
+
+    def validate(self) -> None:
+        assert self.profile == "main-pilot", "Only profile main-pilot is implemented"
+        assert self.seed == 11
+        assert self.pca_dim == 8
+        assert self.optimizer == "AdamW"
+        assert self.learning_rate == 3e-4
+        assert self.weight_decay == 1e-4
+        assert self.warmup_steps == 100
+        assert self.max_epochs == 200
+        assert self.patience == 20
+        assert self.gradient_clip_norm == 1.0
+        assert self.training_loss == "exact_qlike"
+        assert self.fine_patch_length == 12 and self.coarse_patch_length == 72
+        assert self.fine_lookback_days == 7 and self.coarse_lookback_days == 60
+        assert self.news_lookback_days == 30
+        assert self.embedding_dim == 768
+        assert self.channels == 7
+        assert self.daily_scalars == 11
+        assert self.semantic_model == "BAAI/bge-base-en-v1.5"
+        assert self.sentiment_model == "ProsusAI/finbert"
+        assert self.max_tokens == 512
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
