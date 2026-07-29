@@ -23,6 +23,18 @@ def test_locked_training_configuration():
     assert config.training_loss == "exact_qlike"
     assert config.seed == 11
     assert config.pca_dim == 8
+    assert config.verified_maintenance_intervals == (
+        (
+            "binance_spot_upgrade_2021_08_13",
+            "2021-08-13 02:00:00+00:00",
+            "2021-08-13 06:25:00+00:00",
+        ),
+        (
+            "binance_spot_upgrade_2021_09_29",
+            "2021-09-29 07:00:00+00:00",
+            "2021-09-29 08:55:00+00:00",
+        ),
+    )
 
 
 def test_scheduler_lock_hash_ignores_only_runtime_batching_controls():

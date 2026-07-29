@@ -44,8 +44,87 @@ class MarketData:
     log_rv: np.ndarray  # [day]
     valid: np.ndarray  # [day]
     zero_volume: np.ndarray  # [day, 288]
+    maintenance_synthetic: np.ndarray  # [day, 288], audit-only
     date_to_index: dict[pd.Timestamp, int]
     audit: dict[str, Any]
+
+
+def _insert_verified_maintenance_bars(
+    raw: pd.DataFrame,
+    config: MainPilotConfig,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Causally insert no-trade bars only inside pre-locked maintenance intervals."""
+    raw = raw.copy()
+    raw["_maintenance_synthetic"] = False
+    interval_audits: list[dict[str, Any]] = []
+    inserted_frames: list[pd.DataFrame] = []
+    available_times = set(raw["Open Time"])
+    for name, start_text, end_text in config.verified_maintenance_intervals:
+        start = pd.Timestamp(start_text)
+        end = pd.Timestamp(end_text)
+        expected = pd.date_range(start, end, freq="5min")
+        in_loaded_range = expected[
+            (expected >= raw["Open Time"].min()) & (expected <= raw["Open Time"].max())
+        ]
+        missing = in_loaded_range[~in_loaded_range.isin(available_times)]
+        reference_time = start - pd.Timedelta(minutes=5)
+        reference = raw.loc[raw["Open Time"] == reference_time]
+        if len(missing) and len(reference) != 1:
+            raise RuntimeError(
+                f"Cannot causally fill {name}: expected exactly one preceding bar at "
+                f"{reference_time}, found {len(reference)}"
+            )
+        reference_close = (
+            float(reference.iloc[0]["Close"]) if len(reference) == 1 else None
+        )
+        if len(missing):
+            if not np.isfinite(reference_close) or reference_close <= 0:
+                raise RuntimeError(f"Invalid preceding close for maintenance interval {name}")
+            synthetic = pd.DataFrame(
+                {
+                    "Open Time": missing,
+                    "Open": reference_close,
+                    "High": reference_close,
+                    "Low": reference_close,
+                    "Close": reference_close,
+                    "Volume": 0.0,
+                    "Quote Asset Volume": 0.0,
+                    "Number of Trades": 0.0,
+                    "Taker Buy Base Asset Volume": 0.0,
+                    "Taker Buy Quote Asset Volume": 0.0,
+                    "_maintenance_synthetic": True,
+                }
+            )
+            inserted_frames.append(synthetic)
+            available_times.update(missing)
+        interval_audits.append(
+            {
+                "name": name,
+                "start_utc": start.isoformat(),
+                "end_utc": end.isoformat(),
+                "expected_grid_bars": int(len(in_loaded_range)),
+                "bars_already_present": int(len(in_loaded_range) - len(missing)),
+                "synthetic_bars_inserted": int(len(missing)),
+                "reference_close_time_utc": reference_time.isoformat(),
+                "reference_close": reference_close,
+                "policy": (
+                    "OHLC=last observed close before verified closure; volume, quote "
+                    "volume, trades and taker-buy volumes=0; no future price used"
+                ),
+            }
+        )
+    if inserted_frames:
+        raw = pd.concat([raw, *inserted_frames], ignore_index=True)
+        raw.sort_values("Open Time", inplace=True)
+        raw.reset_index(drop=True, inplace=True)
+    return raw, {
+        "policy": "verified_exchange_maintenance_no_trade_bars",
+        "feature_channel_added": False,
+        "total_synthetic_bars_inserted": int(
+            sum(item["synthetic_bars_inserted"] for item in interval_audits)
+        ),
+        "intervals": interval_audits,
+    }
 
 
 def load_market_data(
@@ -72,6 +151,7 @@ def load_market_data(
     numeric_columns = [column for column in CSV_COLUMNS if column != "Open Time"]
     for column in numeric_columns:
         raw[column] = pd.to_numeric(raw[column], errors="coerce")
+    raw, maintenance_audit = _insert_verified_maintenance_bars(raw, config)
     log_close = np.log(raw["Close"].to_numpy(dtype=np.float64))
     timestamps = raw["Open Time"].to_numpy()
     returns = np.empty(len(raw), dtype=np.float64)
@@ -91,6 +171,7 @@ def load_market_data(
     )
     raw_returns = np.full((n_days, config.bars_per_day), np.nan, dtype=np.float64)
     zero_volume = np.zeros((n_days, config.bars_per_day), dtype=bool)
+    maintenance_synthetic = np.zeros((n_days, config.bars_per_day), dtype=bool)
     rv = np.full(n_days, np.nan, dtype=np.float64)
     valid = np.zeros(n_days, dtype=bool)
     date_to_index = {day: index for index, day in enumerate(dates)}
@@ -126,6 +207,7 @@ def load_market_data(
         trades = group["Number of Trades"].to_numpy(dtype=np.float64)
         taker_base = group["Taker Buy Base Asset Volume"].to_numpy(dtype=np.float64)
         zero = volume <= 0
+        synthetic = group["_maintenance_synthetic"].to_numpy(dtype=bool)
         ratio = np.divide(
             taker_base,
             volume,
@@ -154,6 +236,7 @@ def load_market_data(
         features[day_index] = channel_values.astype(np.float32)
         raw_returns[day_index] = day_returns
         zero_volume[day_index] = zero
+        maintenance_synthetic[day_index] = synthetic
         rv[day_index] = day_rv
         valid[day_index] = True
     log_rv = np.log(rv)
@@ -161,6 +244,15 @@ def load_market_data(
     development_mask = dates <= pd.Timestamp(config.development_end, tz="UTC")
     development_bars = int(np.sum(valid & development_mask) * config.bars_per_day)
     development_zero = int(np.sum(zero_volume[valid & development_mask]))
+    development_synthetic = int(
+        np.sum(maintenance_synthetic[valid & development_mask])
+    )
+    development_organic_zero = int(
+        np.sum(
+            zero_volume[valid & development_mask]
+            & ~maintenance_synthetic[valid & development_mask]
+        )
+    )
     quote = raw["Taker Buy Quote Asset Volume"].to_numpy(dtype=np.float64)
     base = raw["Taker Buy Base Asset Volume"].to_numpy(dtype=np.float64)
     close = raw["Close"].to_numpy(dtype=np.float64)
@@ -175,10 +267,14 @@ def load_market_data(
         "duplicate_timestamps_removed": duplicate_count,
         "invalid_reasons": invalid_counts,
         "development_only_zero_volume_bars": development_zero,
+        "development_only_organic_zero_volume_bars": development_organic_zero,
+        "development_only_maintenance_synthetic_bars": development_synthetic,
         "development_only_bars": development_bars,
         "development_only_zero_volume_rate": development_zero
         / max(development_bars, 1),
         "zero_volume_mask_used_as_model_channel": False,
+        "maintenance_synthetic_mask_used_as_model_channel": False,
+        "verified_maintenance_fill": maintenance_audit,
         "taker_buy_quote_used_for_model": False,
         "taker_buy_quote_qc_relative_error": {
             "median": float(np.nanmedian(quote_consistency)),
@@ -188,11 +284,14 @@ def load_market_data(
         "model_channels": MODEL_CHANNELS,
     }
     logger.info(
-        "MARKET QC DONE | valid_days=%d invalid_days=%d zero_volume_dev=%d/%d",
+        "MARKET QC DONE | valid_days=%d invalid_days=%d zero_volume_dev=%d/%d "
+        "(maintenance=%d organic=%d)",
         int(valid.sum()),
         int((~valid).sum()),
         development_zero,
         development_bars,
+        development_synthetic,
+        development_organic_zero,
     )
     return MarketData(
         dates=dates,
@@ -202,6 +301,7 @@ def load_market_data(
         log_rv=log_rv,
         valid=valid,
         zero_volume=zero_volume,
+        maintenance_synthetic=maintenance_synthetic,
         date_to_index=date_to_index,
         audit=audit,
     )
@@ -254,4 +354,3 @@ def sample_dates_for_block(
 
 def write_market_audit(market: MarketData, output_dir: Path) -> None:
     write_json(output_dir / "audit" / "market_data_qc.json", market.audit)
-

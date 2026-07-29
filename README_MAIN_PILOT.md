@@ -8,6 +8,12 @@ deletes the pilot checkpoint, retrains the primary model on Fold 5 with seed
 11, and evaluates the Fold-5 OOS block against Random Walk, HAR-OLS with Duan
 smearing, and HAR-QLIKE.
 
+The market loader causally inserts no-trade bars only for the two verified
+Binance spot-maintenance closures locked in the specification
+(`2021-08-13 02:00–06:25 UTC` and `2021-09-29 07:00–08:55 UTC`). Every other
+gap remains invalid. The synthetic-maintenance mask is audit-only and is never
+a model feature.
+
 The full command refuses to run without CUDA. BGE and FinBERT are loaded with
 `local_files_only=True`; put both Hugging Face model snapshots in the server
 cache before starting.
@@ -47,4 +53,3 @@ of 32.
 Smoke output is isolated under `outputs/main_pilot/smoke` and uses a
 deterministic 768-dimensional test double for BGE/FinBERT. It is never a
 research result and never creates the main `scheduler_horizon.json`.
-

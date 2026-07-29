@@ -60,12 +60,12 @@ Phạm vi sử dụng:
 2025-06-30 23:55 UTC
 ```
 
-Chỉ giữ một ngày nếu thỏa mãn:
+Chỉ giữ một ngày nếu thỏa mãn, sau khi áp dụng duy nhất chính sách bảo trì đã khóa tại §2.1.1:
 
 - Có đủ 288 nến 5 phút.
 - Có close của nến `23:55` ngày trước để tạo return đầu tiên lúc `00:00`.
 - Có đủ 288 log-return liên tục theo lưới 5 phút.
-- Không có khoảng trống intraday.
+- Không có khoảng trống intraday ngoài các no-trade bar bảo trì đã xác minh tại §2.1.1.
 - \(RV_t > 0\).
 
 Return được tính trên chuỗi close toàn cục trước khi group theo UTC date:
@@ -78,7 +78,35 @@ r_{t,00{:}00}
 \log P_{t-1,23{:}55}
 \]
 
-và tương tự cho các nến còn lại. Một ngày có 288 close nhưng chỉ sai phân bên trong ngày sẽ chỉ có 287 return và không đúng định nghĩa này. Ngày \(t\) chỉ hợp lệ khi chuỗi từ close `23:55` của \(t-1\) đến close `23:55` của \(t\) liên tục đúng 5 phút. Loader được phép giữ nến `2017-12-31 23:55` chỉ làm boundary bar cho ngày đầu phạm vi; nó không tạo target ngoài giai đoạn nghiên cứu.
+và tương tự cho các nến còn lại. Một ngày có 288 close nhưng chỉ sai phân bên trong ngày sẽ chỉ có 287 return và không đúng định nghĩa này. Ngày \(t\) chỉ hợp lệ khi chuỗi từ close `23:55` của \(t-1\) đến close `23:55` của \(t\) liên tục đúng 5 phút sau verified-maintenance fill. Loader được phép giữ nến `2017-12-31 23:55` chỉ làm boundary bar cho ngày đầu phạm vi; nó không tạo target ngoài giai đoạn nghiên cứu.
+
+#### 2.1.1. Khoảng đóng cửa bảo trì đã xác minh
+
+Audit dữ liệu xác nhận hai khoảng thiếu nến trùng chính xác với thời gian Binance tạm dừng toàn bộ spot trading để nâng cấp hệ thống:
+
+```text
+2021-08-13 02:00 – 06:25 UTC: 54 bar
+2021-09-29 07:00 – 08:55 UTC: 24 bar
+```
+
+Nguồn đối chiếu lịch bảo trì:
+
+- https://bitnoticias.com.br/noticias/exchange-binance-realiza-atualizacao-e-trava-negociacoes-por-no-minimo-4-horas/
+- https://help.bituniverse.org/announcements/2021-09-29
+
+Đây là hai khoảng duy nhất được phép tạo no-trade bar. Với từng timestamp 5 phút bị thiếu trong các khoảng trên:
+
+```text
+Open = High = Low = Close = close quan sát cuối cùng ngay trước khi đóng cửa
+Volume = Quote Asset Volume = 0
+Number of Trades = 0
+Taker Buy Base Asset Volume = 0
+Taker Buy Quote Asset Volume = 0
+```
+
+Quy tắc này nhân quả: không được đọc giá mở cửa lại hoặc bất kỳ quan sát tương lai nào để dựng bar bảo trì. Return trong thời gian đóng cửa bằng 0; nến thực đầu tiên sau khi mở lại nhận toàn bộ biến động từ close cuối trước bảo trì. Loader chỉ chèn timestamp thực sự thiếu, không ghi đè bar có sẵn.
+
+Mọi khoảng thiếu khác vẫn làm ngày không hợp lệ theo quy tắc gốc; không forward-fill chung, không nội suy và không chuyển thành “60 ngày hợp lệ gần nhất”. Loader phải xuất audit theo từng interval gồm số bar dự kiến, số bar đã có, số bar tổng hợp, timestamp và giá close tham chiếu. `maintenance_synthetic` chỉ là mask audit, không phải channel/feature của mô hình.
 
 Các cột intraday dự kiến sử dụng:
 
@@ -656,17 +684,19 @@ taker_buy_imbalance = 2.0 * taker_buy_ratio - 1.0
 
 Khi `Volume=0`, tỷ lệ mua chủ động được đặt về giá trị trung tính 0,5 và imbalance bằng 0.
 
-Audit dùng để khóa kiến trúc chỉ lấy development period từ 2018-01-01 đến 2024-04-16:
+Audit development period từ 2018-01-01 đến 2024-04-16 phải tách zero-volume quan sát thực và no-trade bar bảo trì tổng hợp. Với file hiện tại sau chính sách §2.1.1:
 
 ```text
-Bars: 660.213
-Zero-volume bars: 45
-Zero-volume rate: 0,00682%
+Valid calendar days: 2.269
+Bars in valid days: 653.472
+Organic zero-volume bars: 0
+Verified-maintenance synthetic bars: 78
+Total zero-volume bars: 78
 ```
 
-Vì tỷ lệ dưới 0,01%, không dùng `zero_volume_mask` như một channel riêng. Quy tắc neutral ratio vẫn được giữ.
+Không dùng `zero_volume_mask` hoặc `maintenance_synthetic` như channel riêng. Đây là quyết định dữ liệu được khóa cùng chính sách bảo trì: bảy channel hiện có đã biểu diễn no-trade bằng return/range/volume/trades bằng 0 và taker ratio trung tính; mask tổng hợp chỉ phục vụ audit, không tạo shortcut nhận diện hai ngày lịch sử. Quy tắc neutral ratio vẫn được giữ.
 
-Final-test period chỉ được kiểm tra chất lượng dữ liệu sau khi quyết định này đã khóa; không được dùng để chọn lại channel. Trên toàn bộ mẫu đến 2025-06-30, con số QC là 45/786.933 bar, nhưng đây không phải căn cứ chọn kiến trúc.
+Final-test period chỉ được kiểm tra chất lượng dữ liệu sau khi quyết định này đã khóa; không được dùng để chọn lại channel hoặc mở rộng danh sách maintenance interval.
 
 Các biến đuôi dày có thể được winsorize bằng ngưỡng chỉ tính trên train fold. Không dùng ngưỡng toàn bộ dữ liệu.
 
@@ -704,10 +734,10 @@ Không dùng instance normalization làm mất mức biến động, trừ khi c
 
 Một sample target ngày \(t\) chỉ được giữ nếu:
 
-- Toàn bộ bảy ngày từ \(t-7\) đến \(t-1\) đều có đủ 288 nến và return liên tục.
-- Toàn bộ 60 ngày từ \(t-60\) đến \(t-1\) đều có đủ 288 nến và return liên tục.
+- Toàn bộ bảy ngày từ \(t-7\) đến \(t-1\) đều có đủ 288 nến và return liên tục sau verified-maintenance fill §2.1.1.
+- Toàn bộ 60 ngày từ \(t-60\) đến \(t-1\) đều có đủ 288 nến và return liên tục sau verified-maintenance fill §2.1.1.
 - Có nến `23:55` của ngày \(t-61\) để tính return `00:00` cho ngày đầu coarse window.
-- Không nối hai đoạn intraday nằm ở hai phía của một ngày bị thiếu.
+- Không nối hai đoạn intraday nằm ở hai phía của một ngày bị thiếu ngoài hai khoảng bảo trì đã khóa.
 
 Nếu bất kỳ ngày nào trong cửa sổ không hợp lệ thì loại toàn bộ sample \(t\).
 
@@ -1736,7 +1766,7 @@ COVID stress fold được trình bày trong bảng riêng và không được c
 20. Early stopping chỉ dùng validation; validation observations không tham gia optimizer, scaler hoặc PCA của fold.
 21. Fold boundary phải khớp bảng §18; mỗi block phải xuất candidate/removed/final sample counts.
 22. Final test không được dùng để chọn feature, hyperparameter, epoch, loss cap hoặc attention backend.
-23. Decision bỏ `zero_volume_mask` phải được tái hiện từ development-only audit; final period chỉ là QC.
+23. Audit phải tách organic zero-volume và verified-maintenance synthetic bars; cả `zero_volume_mask` và `maintenance_synthetic` đều không được đưa vào feature, final period chỉ là QC.
 24. Xuất bắt buộc audit drift tin theo tháng/năm và audit timestamp bất thường. Không tuyên bố đã loại leakage publication-vs-crawl nếu schema không có ingestion/version timestamp.
 25. Full Ridge-QLIKE phải assert dimensionality 7.170/7.650; Ridge-Reduced phải assert 93/109 tương ứng với \(k\), ordered feature schema và grid \(\lambda\) đã khóa.
 26. Attention smoke test phải log backend thực dùng, `need_weights=False`, peak GPU memory và tổng số trainable parameters.
@@ -1755,6 +1785,7 @@ COVID stress fold được trình bày trong bảng riêng và không được c
 39. Ngay sau initialization, mọi deep sample phải cho cùng \(\widehat{RV}=mean(RV_{core\ train})\) tới sai số số học.
 40. `scheduler_horizon.json` phải tồn tại trước mọi test-prediction artifact; hash của nó phải khớp mọi deep checkpoint.
 41. Main-table eligibility phải assert đủ chính xác năm primary seed và `S==5`; model có `S_actual<5` chỉ được xuất sang supplemental table và bị loại khỏi MCS.
+42. Maintenance fill chỉ được áp dụng cho đúng 78 timestamp đã khóa tại §2.1.1, dùng duy nhất close ở `start-5 phút`, không đọc giá mở cửa lại; unit test phải xác nhận return của bar tổng hợp bằng 0 và toàn bộ reopening jump nằm ở nến thực đầu tiên sau bảo trì. Gap ngoài whitelist vẫn phải làm ngày/cửa sổ không hợp lệ.
 
 ---
 
@@ -1772,8 +1803,9 @@ COVID stress fold được trình bày trong bảng riêng và không được c
 - [x] Fine lookback cố định 7 ngày.
 - [x] Coarse lookback 60 ngày, patch 6 giờ và stride 6 giờ.
 - [x] RV ngày có đúng 288 return, bao gồm return `00:00` từ close `23:55` ngày trước.
+- [x] Chỉ hai khoảng Binance spot maintenance tại §2.1.1 được dựng causal no-trade bars; mọi gap khác vẫn bị loại.
 - [x] Mỗi patch thêm `patch_logRV = log(sum(r²)+epsilon)` trước projection.
-- [x] Không dùng `zero_volume_mask`; quyết định dựa trên development-only audit.
+- [x] Không dùng `zero_volume_mask` hoặc `maintenance_synthetic` làm channel; organic zero và 78 bar bảo trì được audit riêng.
 - [x] Positional encoding dùng sinusoidal cố định.
 - [x] PatchTST Transformer chia sẻ trọng số giữa channel/scale; channel fusion chính là learned gated weighted sum.
 - [x] Cross-attention chính là market patch query news.

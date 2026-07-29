@@ -66,6 +66,18 @@ class MainPilotConfig:
     epsilon_r: float = 1e-12
     epsilon_rv: float = 1e-12
     scaler_epsilon: float = 1e-8
+    verified_maintenance_intervals: tuple[tuple[str, str, str], ...] = (
+        (
+            "binance_spot_upgrade_2021_08_13",
+            "2021-08-13 02:00:00+00:00",
+            "2021-08-13 06:25:00+00:00",
+        ),
+        (
+            "binance_spot_upgrade_2021_09_29",
+            "2021-09-29 07:00:00+00:00",
+            "2021-09-29 08:55:00+00:00",
+        ),
+    )
 
     d_model: int = 32
     attention_heads: int = 4
@@ -129,7 +141,18 @@ class MainPilotConfig:
         assert self.semantic_model == "BAAI/bge-base-en-v1.5"
         assert self.sentiment_model == "ProsusAI/finbert"
         assert self.max_tokens == 512
+        assert self.verified_maintenance_intervals == (
+            (
+                "binance_spot_upgrade_2021_08_13",
+                "2021-08-13 02:00:00+00:00",
+                "2021-08-13 06:25:00+00:00",
+            ),
+            (
+                "binance_spot_upgrade_2021_09_29",
+                "2021-09-29 07:00:00+00:00",
+                "2021-09-29 08:55:00+00:00",
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
