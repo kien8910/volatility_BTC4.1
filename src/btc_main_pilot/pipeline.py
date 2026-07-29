@@ -274,6 +274,23 @@ def _initialization_assertion(
     expected_rv: float,
     device: torch.device,
 ) -> None:
+    model.to(device)
+    parameter_devices = {parameter.device for parameter in model.parameters()}
+    buffer_devices = {buffer.device for buffer in model.buffers()}
+
+    def on_requested_device(actual: torch.device) -> bool:
+        return actual.type == device.type and (
+            device.index is None or actual.index == device.index
+        )
+
+    if not all(
+        on_requested_device(actual)
+        for actual in parameter_devices | buffer_devices
+    ):
+        raise RuntimeError(
+            "Initialization check could not place every model parameter and buffer "
+            f"on {device}: parameters={parameter_devices}, buffers={buffer_devices}"
+        )
     model.eval()
     raw = dataset[0]
     batch = {

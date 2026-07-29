@@ -3,6 +3,7 @@ import torch
 
 from btc_main_pilot.config import MainPilotConfig
 from btc_main_pilot.model import CrossAttentionBlock, build_model
+from btc_main_pilot.pipeline import _initialization_assertion
 
 
 def _batch(batch_size: int = 1) -> dict[str, torch.Tensor]:
@@ -60,3 +61,33 @@ def test_all_masked_news_keys_are_rejected_and_null_must_be_unmasked():
     except AssertionError:
         pass
 
+
+def test_initialization_assertion_moves_model_before_forward():
+    class RecordingModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(1.0))
+            self.register_buffer("offset", torch.tensor(0.0))
+            self.requested_device = None
+
+        def to(self, device):
+            self.requested_device = torch.device(device)
+            return super().to(device)
+
+        def forward(self, batch):
+            assert batch["input"].device == self.weight.device
+            return {"predicted_rv": self.weight.reshape(1) + self.offset}
+
+    class OneItemDataset:
+        def __getitem__(self, index):
+            assert index == 0
+            return {"input": torch.tensor([1.0]), "target_date": "2021-01-01"}
+
+    model = RecordingModel()
+    _initialization_assertion(
+        model,
+        OneItemDataset(),
+        expected_rv=1.0,
+        device=torch.device("cpu"),
+    )
+    assert model.requested_device == torch.device("cpu")
