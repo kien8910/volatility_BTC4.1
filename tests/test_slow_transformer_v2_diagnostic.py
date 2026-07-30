@@ -37,6 +37,7 @@ def test_slow_v2_profile_and_candidate_set_are_registered():
         "finbert_normal",
         "core_centered_event_prototypes",
         "slow_calendar_control",
+        "fast_calendar_control",
         "slow_update_tokens",
         "slow_update_multiquery",
         "slow_update_multiquery_gated",

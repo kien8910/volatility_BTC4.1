@@ -18,7 +18,7 @@ from .config import (
     SPIKE_DIAGNOSTIC_VARIANTS,
 )
 from .data import load_market_data, write_market_audit
-from .metrics import prediction_metrics
+from .metrics import log_forecast_diagnostics, prediction_metrics
 from .model import attention_backend_metadata, build_model
 from .pipeline import (
     _datasets,
@@ -135,7 +135,7 @@ def _pooled_metrics(frame: pd.DataFrame, model_name: str) -> dict[str, Any]:
         if denominator > 0
         else float("nan")
     )
-    return {
+    output = {
         "model": model_name,
         "folds": int(clean["fold"].nunique()),
         "n_predictions": int(len(frame)),
@@ -166,6 +166,25 @@ def _pooled_metrics(frame: pd.DataFrame, model_name: str) -> dict[str, Any]:
         "rmse_logrv": float(np.sqrt(np.mean(error**2))),
         "mae_logrv": float(np.mean(np.abs(error))),
     }
+    output.update(log_forecast_diagnostics(clean))
+    fold_direction_hits: list[np.ndarray] = []
+    for _, group in clean.groupby("fold", sort=False):
+        ordered = group.sort_values("target_date")
+        group_true = ordered["true_log_rv"].to_numpy(dtype=np.float64)
+        group_predicted = ordered["predicted_log_rv"].to_numpy(
+            dtype=np.float64
+        )
+        if len(group_true) > 1:
+            fold_direction_hits.append(
+                np.sign(np.diff(group_true))
+                == np.sign(group_predicted[1:] - group_true[:-1])
+            )
+    output["directional_accuracy_logrv"] = (
+        float(np.mean(np.concatenate(fold_direction_hits)))
+        if fold_direction_hits
+        else None
+    )
+    return output
 
 
 def _validate_main_scheduler(

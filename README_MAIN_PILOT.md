@@ -619,3 +619,94 @@ PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
 PCA-specific checkpoints, predictions, and metrics are stored under `pca8/`
 and `pca16/`. The combined comparison is written to
 `metrics/pca_comparison.csv` and `metrics/fold5_pca_report.json`.
+
+## Machine-learning walk-forward benchmark
+
+The `ml-walk-forward-benchmark` profile is the paper-oriented protocol. It
+keeps chronological expanding-window evaluation and separates model
+development from the untouched final holdout:
+
+- development OOS: Fold 1-5, five adjacent 180-day windows ending
+  2024-04-16;
+- final holdout: 2024-04-17 through 2025-06-30 (440 calendar days);
+- primary seeds: `11,22,33,44,55`;
+- primary representation: PCA8;
+- seed ensemble: arithmetic mean of predicted RV, not log-RV.
+
+The ablation set contains HAR-QLIKE (no text), linear FinBERT, directional
+event prototypes, identical fast-only and slow-only Transformer
+cross-attention controls, slow-update tokens, multi-query slow updates,
+point-in-time gating, and a FinBERT/slow blend. Econometric comparisons add
+Random Walk, HAR-OLS with Duan smearing, ARCH(5)-Normal, GARCH(1,1)-Normal,
+GJR-GARCH(1,1)-Student-t, and EGARCH(1,1)-Student-t. ARCH-family parameters
+are estimated only on each fold's core daily returns and are held fixed while
+the variance state is updated sequentially through validation/OOS.
+
+Install the new econometric dependency and run the CPU smoke test first:
+
+```bash
+python -m pip install -e .
+
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile ml-walk-forward-benchmark \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/ml_walk_forward_benchmark \
+  --smoke \
+  --no-resume
+```
+
+Run development on CUDA. This command does not read any market or news outcome
+after 2024-04-16:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile ml-walk-forward-benchmark \
+  --benchmark-phase development \
+  --benchmark-seeds 11,22,33,44,55 \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/ml_walk_forward_benchmark \
+  --scheduler-path outputs/main_pilot/scheduler_horizon.json \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+The full development command performs 125 neural fits (five trainable
+Transformer variants x five folds x five seeds); the final phase performs 25.
+Linear probes are deterministic but are repeated to keep each seed directory
+self-contained; econometric models are fit once per fold. For a
+non-publishable pipeline check, use
+`--benchmark-seeds 11`; that result is explicitly marked
+`main_table_eligible=false` and cannot open the final holdout.
+
+Inspect and freeze the development result before opening the holdout. The
+development command writes `frozen_final_protocol.json`. The final command
+refuses to run if that file, its hash, the completed development report, or
+the exact five-seed set differs:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile ml-walk-forward-benchmark \
+  --benchmark-phase final \
+  --benchmark-seeds 11,22,33,44,55 \
+  --confirm-open-final-holdout \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/ml_walk_forward_benchmark \
+  --scheduler-path outputs/main_pilot/scheduler_horizon.json \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+Each phase writes per-seed checkpoints and predictions, RV-scale ensemble
+predictions, econometric fit metadata/failures, per-fold metrics, and both
+full-support and common-support comparison tables. The primary comparison
+file is `metrics/all_model_metrics_common_support.csv`; it contains QLIKE,
+spike/normal QLIKE, RMSE/MAE/MSE/median absolute error on log-RV, R-squared,
+log-RV correlation, directional accuracy, bias, model ranks, and deltas
+against HAR-QLIKE.

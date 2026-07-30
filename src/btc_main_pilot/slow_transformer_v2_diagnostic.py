@@ -79,6 +79,7 @@ SPIKE_QUANTILE = 0.90
 BLEND_ALPHA_GRID = (0.0, 0.25, 0.50, 0.75, 1.0)
 DEEP_CANDIDATES = (
     "slow_calendar_control",
+    "fast_calendar_control",
     "slow_update_tokens",
     "slow_update_multiquery",
     "slow_update_multiquery_gated",
@@ -935,6 +936,7 @@ def _screen(
             pooled_metrics["model"] == name
         ].iloc[0]
         common = sorted(set(anchor_fold.index) & set(current_fold.index))
+        required_wins = min(3, len(common))
 
         def wins(metric: str) -> int:
             return sum(
@@ -960,6 +962,7 @@ def _screen(
         )
         candidates[name] = {
             "folds_compared": len(common),
+            "required_fold_wins": required_wins,
             "overall_fold_wins": overall_wins,
             "normal_fold_wins": wins("normal_qlike"),
             "spike_fold_wins": spike_wins,
@@ -980,8 +983,8 @@ def _screen(
             ),
             "normal_guard_at_most_one_percent_worse": normal_guard,
             "passes_predeclared_screen": bool(
-                overall_wins >= 3
-                and spike_wins >= 3
+                overall_wins >= required_wins
+                and spike_wins >= required_wins
                 and pooled_overall_better
                 and pooled_spike_better
                 and normal_guard
@@ -989,9 +992,10 @@ def _screen(
         }
     return {
         "rule": (
-            "Pass only with overall and spike QLIKE wins in at least 3/4 "
-            "folds, improved pooled overall and spike QLIKE, and pooled normal "
-            "QLIKE no more than 1% worse than HAR."
+            "Pass only with overall and spike QLIKE wins in at least three "
+            "folds (or every fold when fewer than three are run), improved "
+            "pooled overall and spike QLIKE, and pooled normal QLIKE no more "
+            "than 1% worse than HAR."
         ),
         "min_delta": min_delta,
         "candidates": candidates,
@@ -1044,7 +1048,9 @@ def _run_folds(
     lambda_grid: tuple[float, ...] = LAMBDA_SUM_GRID,
     smoke: bool = False,
     selection_mode: Literal[
-        "development_screen", "single_fold_evaluation"
+        "development_screen",
+        "single_fold_evaluation",
+        "confirmatory_evaluation",
     ] = "development_screen",
 ) -> dict[str, Any]:
     predictions_dir = output_dir / "predictions"
@@ -1280,6 +1286,19 @@ def _run_folds(
             targets,
             config,
         )
+        fast_control_sets = _build_transformer_datasets(
+            market,
+            news,
+            causal_event,
+            fold,
+            "fast",
+            core_dates,
+            validation_dates,
+            test_dates,
+            anchors,
+            targets,
+            config,
+        )
         update_sets = _build_update_datasets(
             market,
             news,
@@ -1299,11 +1318,15 @@ def _run_folds(
                 fold.name,
                 name,
             )
-            if name == "slow_calendar_control":
-                core_set, validation_set, test_set, prep_meta = control_sets
+            if name in {"slow_calendar_control", "fast_calendar_control"}:
+                state = "fast" if name.startswith("fast_") else "slow"
+                selected_sets = (
+                    fast_control_sets if state == "fast" else control_sets
+                )
+                core_set, validation_set, test_set, prep_meta = selected_sets
                 seed_everything(config.seed)
                 model: nn.Module = HarVectorCrossAttention(
-                    config, prep_meta["token_dim"], "slow"
+                    config, prep_meta["token_dim"], state
                 )
                 model.variant = name
             else:
@@ -1363,6 +1386,11 @@ def _run_folds(
                 ),
                 include_epoch_zero_checkpoint=True,
             )
+            if training.numerical_failure:
+                raise FloatingPointError(
+                    f"{run_name} had a numerical failure and is ineligible "
+                    f"for prediction: {training.failure_reason}"
+                )
             validation_frame = predict_dataset(
                 model,
                 validation_set,
@@ -1426,9 +1454,22 @@ def _run_folds(
                 "early_stopped": training.early_stopped,
                 "best_validation_qlike": training.best_validation_qlike,
                 "epoch_zero_exact_har": True,
-                "uses_update_mask": name != "slow_calendar_control",
+                "uses_update_mask": name not in {
+                    "slow_calendar_control",
+                    "fast_calendar_control",
+                },
+                "news_state": (
+                    "fast" if name == "fast_calendar_control" else "slow"
+                ),
                 "market_query_count": (
-                    1 if name in {"slow_calendar_control", "slow_update_tokens"} else 3
+                    1
+                    if name
+                    in {
+                        "slow_calendar_control",
+                        "fast_calendar_control",
+                        "slow_update_tokens",
+                    }
+                    else 3
                 ),
                 "point_in_time_gate": name.endswith("_gated"),
             }
@@ -1524,6 +1565,18 @@ def _run_folds(
             "primary_model": "slow_calendar_control",
             "statistical_claim": (
                 "None; single-fold temporal generalization diagnostic."
+            ),
+        }
+    elif selection_mode == "confirmatory_evaluation":
+        selection = {
+            "rule": (
+                "No architecture, PCA dimension, hyperparameter, blend, or "
+                "checkpoint rule may be selected from final-holdout outcomes."
+            ),
+            "folds_compared": int(fold_metrics["fold"].nunique()),
+            "primary_model": "slow_calendar_control",
+            "statistical_claim": (
+                "Confirmatory evaluation of the frozen development protocol."
             ),
         }
     else:

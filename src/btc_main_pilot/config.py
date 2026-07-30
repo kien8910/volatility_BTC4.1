@@ -62,6 +62,18 @@ FOLD_5 = Fold(
     "2024-04-16",
 )
 
+FINAL_HOLDOUT_FOLD = Fold(
+    "final_holdout",
+    "2018-01-01",
+    "2024-01-17",
+    "2024-01-18",
+    "2024-04-16",
+    "2024-04-17",
+    "2025-06-30",
+)
+
+DEVELOPMENT_FOLDS = (FOLD_1, FOLD_2, FOLD_3, FOLD_4, FOLD_5)
+
 SPIKE_DIAGNOSTIC_FOLDS = (FOLD_1, FOLD_2, FOLD_3, FOLD_4)
 SPIKE_DIAGNOSTIC_VARIANTS = (
     "main",
@@ -174,6 +186,7 @@ class MainPilotConfig:
             "development-vector-integration-diagnostic",
             "development-slow-transformer-v2-diagnostic",
             "slow-transformer-fold5-evaluation",
+            "ml-walk-forward-benchmark",
         }
         assert self.seed == 11
         assert self.pca_dim == 8

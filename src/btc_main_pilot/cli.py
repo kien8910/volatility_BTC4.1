@@ -45,6 +45,11 @@ from .slow_transformer_fold5_evaluation import (
     run_slow_transformer_fold5_evaluation,
     run_slow_transformer_fold5_smoke,
 )
+from .ml_benchmark import (
+    parse_benchmark_seeds,
+    run_ml_benchmark_smoke,
+    run_ml_walk_forward_benchmark,
+)
 from .spike_diagnostic import (
     run_development_spike_diagnostic,
     run_spike_diagnostic_smoke,
@@ -74,9 +79,13 @@ def build_parser() -> argparse.ArgumentParser:
             "development-vector-integration-diagnostic",
             "development-slow-transformer-v2-diagnostic",
             "slow-transformer-fold5-evaluation",
+            "ml-walk-forward-benchmark",
         ],
         default="main-pilot",
-        help="Development diagnostics run Fold 1-4 only and never open final test.",
+        help=(
+            "Legacy development diagnostics run Fold 1-4 only. The ML "
+            "benchmark uses Fold 1-5 and guards the separate final holdout."
+        ),
     )
     parser.add_argument(
         "--market",
@@ -189,6 +198,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         help="Shared long-text embedding cache reused by the gate diagnostic.",
     )
+    parser.add_argument(
+        "--benchmark-phase",
+        choices=["development", "final", "all"],
+        default="development",
+        help=(
+            "ML benchmark phase. Development never opens post-2024-04-16; "
+            "final requires a frozen development protocol and explicit "
+            "confirmation."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-seeds",
+        default="11,22,33,44,55",
+        help=(
+            "Comma-separated deep-model seeds. The final main table requires "
+            "exactly 11,22,33,44,55."
+        ),
+    )
+    parser.add_argument(
+        "--confirm-open-final-holdout",
+        action="store_true",
+        help=(
+            "Explicitly authorize the one-time 2024-04-17..2025-06-30 "
+            "confirmatory evaluation."
+        ),
+    )
     return parser
 
 
@@ -225,6 +260,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "slow-transformer-fold5-evaluation": (
             "outputs/slow_transformer_fold5_evaluation"
+        ),
+        "ml-walk-forward-benchmark": (
+            "outputs/ml_walk_forward_benchmark"
         ),
     }
     output_dir = args.output_dir or default_outputs[args.profile]
@@ -353,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
             report = run_slow_transformer_v2_smoke(config, logger)
         elif args.profile == "slow-transformer-fold5-evaluation":
             report = run_slow_transformer_fold5_smoke(config, logger)
+        elif args.profile == "ml-walk-forward-benchmark":
+            report = run_ml_benchmark_smoke(config, logger)
         else:
             report = run_smoke(config, logger, resume=args.resume)
         logger.info(
@@ -449,6 +489,19 @@ def main(argv: list[str] | None = None) -> int:
             longtext_cache_path=Path(args.longtext_cache),
             scheduler_path=Path(args.scheduler_path),
             resume=args.resume,
+        )
+    elif args.profile == "ml-walk-forward-benchmark":
+        run_ml_walk_forward_benchmark(
+            config,
+            logger,
+            review_audit_dir=Path(args.review_audit_dir),
+            silver_path=Path(args.silver_holdout_path),
+            longtext_cache_path=Path(args.longtext_cache),
+            scheduler_path=Path(args.scheduler_path),
+            resume=args.resume,
+            phase=args.benchmark_phase,
+            seeds=parse_benchmark_seeds(args.benchmark_seeds),
+            confirm_open_final_holdout=args.confirm_open_final_holdout,
         )
     else:
         run_main_pilot(
