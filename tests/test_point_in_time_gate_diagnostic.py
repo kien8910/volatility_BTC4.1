@@ -12,6 +12,7 @@ from btc_main_pilot.point_in_time_gate_diagnostic import (
     REFINED_CONTEXT_FAMILIES,
     GateSpec,
     _gate_feature_row,
+    _gate_screen,
     _market_gate_features,
     _route_frame,
     refined_event_decision,
@@ -179,3 +180,33 @@ def test_gate_scope_is_fold_1_to_4_only():
     ]
     assert all(fold.test_end <= "2023-10-19" for fold in SPIKE_DIAGNOSTIC_FOLDS)
     assert len(GATE_NAMES) == len(GATE_SPECS) == 5
+
+
+def test_gate_screen_handles_a_smoke_block_with_no_spike_days():
+    rows = [
+        {
+            "fold": "smoke_fold",
+            "model": "har_qlike",
+            "mean_qlike": 0.2,
+            "normal_qlike": 0.2,
+            "spike_qlike": None,
+        }
+    ]
+    rows.extend(
+        {
+            "fold": "smoke_fold",
+            "model": name,
+            "mean_qlike": 0.19,
+            "normal_qlike": 0.19,
+            "spike_qlike": None,
+        }
+        for name in GATE_NAMES
+    )
+    fold_metrics = pd.DataFrame(rows)
+    pooled_metrics = fold_metrics.drop(columns="fold")
+    screen = _gate_screen(fold_metrics, pooled_metrics, min_delta=1e-5)
+    assert set(screen["candidates"]) == set(GATE_NAMES)
+    assert all(
+        candidate["pooled_spike_delta"] is None
+        for candidate in screen["candidates"].values()
+    )

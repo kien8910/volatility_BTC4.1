@@ -18,6 +18,7 @@ from .data import (
     MarketData,
     load_market_data,
     sample_dates_for_block,
+    sample_dates_for_har_text_block,
     write_market_audit,
 )
 from .dataset import RVWindowDataset
@@ -167,7 +168,13 @@ def _block_dates(
     output_dir: Path,
     logger: logging.Logger,
     include_test: bool,
+    config: MainPilotConfig | None = None,
+    sampling_rule: str = "patchtst",
 ) -> tuple[list[pd.Timestamp], list[pd.Timestamp], list[pd.Timestamp]]:
+    if config is None:
+        config = MainPilotConfig()
+    if sampling_rule not in {"patchtst", "har_text"}:
+        raise ValueError(f"Unknown sampling rule: {sampling_rule}")
     blocks = {}
     dates = {}
     specifications = [
@@ -177,9 +184,30 @@ def _block_dates(
     if include_test:
         specifications.append(("test", fold.test_start, fold.test_end))
     for name, start, end in specifications:
-        dates[name], blocks[name] = sample_dates_for_block(market, start, end)
+        if sampling_rule == "har_text":
+            dates[name], blocks[name] = sample_dates_for_har_text_block(
+                market,
+                start,
+                end,
+                rv_lookback=22,
+            )
+        else:
+            dates[name], blocks[name] = sample_dates_for_block(
+                market,
+                start,
+                end,
+                coarse_lookback=config.coarse_lookback_days,
+                fine_lookback=config.fine_lookback_days,
+                minimum_calendar_lookback=max(
+                    config.coarse_lookback_days,
+                    config.fine_lookback_days,
+                    config.news_lookback_days,
+                    22,
+                ),
+            )
         logger.info(
-            "SAMPLE AUDIT | fold=%s block=%s candidates=%d final=%d",
+            "SAMPLE AUDIT | rule=%s fold=%s block=%s candidates=%d final=%d",
+            sampling_rule,
             fold.name,
             name,
             blocks[name]["candidate_target_days"],
@@ -204,7 +232,13 @@ def _datasets(
     dict[str, Any],
 ]:
     core_dates, validation_dates, test_dates = _block_dates(
-        market, fold, output_dir, logger, include_test=include_test_diagnostic
+        market,
+        fold,
+        output_dir,
+        logger,
+        include_test=include_test_diagnostic,
+        config=config,
+        sampling_rule="patchtst",
     )
     if not config.smoke and len(validation_dates) < 60:
         raise RuntimeError(
@@ -764,7 +798,11 @@ def run_main_pilot(
             "attention_backend": attention_backend_metadata(device),
             "market_query_news": True,
             "fine_tokens": 168,
-            "coarse_tokens": 240,
+            "coarse_tokens": (
+                config.coarse_lookback_days
+                * config.bars_per_day
+                // config.coarse_patch_length
+            ),
             "news_tokens_plus_null": 61,
         },
     )

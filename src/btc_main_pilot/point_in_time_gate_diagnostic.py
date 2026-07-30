@@ -480,6 +480,22 @@ def _gate_screen(
     pooled_metrics: pd.DataFrame,
     min_delta: float,
 ) -> dict[str, Any]:
+    def finite(value: Any) -> bool:
+        return value is not None and bool(np.isfinite(value))
+
+    def better(candidate: Any, anchor: Any) -> bool:
+        return finite(candidate) and finite(anchor) and candidate < anchor - min_delta
+
+    def not_worse(candidate: Any, anchor: Any) -> bool:
+        if not finite(anchor):
+            return not finite(candidate)
+        return finite(candidate) and candidate <= anchor + min_delta
+
+    def delta(candidate: Any, anchor: Any) -> float | None:
+        if not (finite(candidate) and finite(anchor)):
+            return None
+        return float(candidate - anchor)
+
     anchor_fold = fold_metrics[
         fold_metrics["model"] == "har_qlike"
     ].set_index("fold")
@@ -493,41 +509,48 @@ def _gate_screen(
         ].set_index("fold")
         pooled = pooled_metrics[pooled_metrics["model"] == name].iloc[0]
         overall_wins = sum(
-            candidate_fold.loc[fold, "mean_qlike"]
-            < anchor_fold.loc[fold, "mean_qlike"] - min_delta
+            better(
+                candidate_fold.loc[fold, "mean_qlike"],
+                anchor_fold.loc[fold, "mean_qlike"],
+            )
             for fold in anchor_fold.index
         )
         normal_wins = sum(
-            candidate_fold.loc[fold, "normal_qlike"]
-            < anchor_fold.loc[fold, "normal_qlike"] - min_delta
+            better(
+                candidate_fold.loc[fold, "normal_qlike"],
+                anchor_fold.loc[fold, "normal_qlike"],
+            )
             for fold in anchor_fold.index
         )
         spike_wins = sum(
-            candidate_fold.loc[fold, "spike_qlike"]
-            < anchor_fold.loc[fold, "spike_qlike"] - min_delta
+            better(
+                candidate_fold.loc[fold, "spike_qlike"],
+                anchor_fold.loc[fold, "spike_qlike"],
+            )
             for fold in anchor_fold.index
         )
         passes = bool(
             overall_wins >= 3
-            and pooled["mean_qlike"]
-            < anchor_pooled["mean_qlike"] - min_delta
-            and pooled["normal_qlike"]
-            <= anchor_pooled["normal_qlike"] + min_delta
-            and pooled["spike_qlike"]
-            <= anchor_pooled["spike_qlike"] + min_delta
+            and better(pooled["mean_qlike"], anchor_pooled["mean_qlike"])
+            and not_worse(
+                pooled["normal_qlike"], anchor_pooled["normal_qlike"]
+            )
+            and not_worse(
+                pooled["spike_qlike"], anchor_pooled["spike_qlike"]
+            )
         )
         candidates[name] = {
             "overall_fold_wins": int(overall_wins),
             "normal_fold_wins": int(normal_wins),
             "spike_fold_wins": int(spike_wins),
-            "pooled_overall_delta": float(
-                pooled["mean_qlike"] - anchor_pooled["mean_qlike"]
+            "pooled_overall_delta": delta(
+                pooled["mean_qlike"], anchor_pooled["mean_qlike"]
             ),
-            "pooled_normal_delta": float(
-                pooled["normal_qlike"] - anchor_pooled["normal_qlike"]
+            "pooled_normal_delta": delta(
+                pooled["normal_qlike"], anchor_pooled["normal_qlike"]
             ),
-            "pooled_spike_delta": float(
-                pooled["spike_qlike"] - anchor_pooled["spike_qlike"]
+            "pooled_spike_delta": delta(
+                pooled["spike_qlike"], anchor_pooled["spike_qlike"]
             ),
             "passes_gate_screen": passes,
             "recommended_for_deep_followup": passes,
@@ -575,7 +598,13 @@ def _run_gate_folds(
             fold.name,
         )
         core_dates, validation_dates, test_dates = _block_dates(
-            market, fold, output_dir, logger, include_test=True
+            market,
+            fold,
+            output_dir,
+            logger,
+            include_test=True,
+            config=config,
+            sampling_rule="har_text",
         )
         if not config.smoke and len(validation_dates) < 60:
             raise RuntimeError(

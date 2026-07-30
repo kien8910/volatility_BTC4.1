@@ -1,5 +1,17 @@
 # BTC PatchTST–BGE–FinBERT main-pilot
 
+## Sampling revision (development continuation)
+
+The text/Gamma/gate development profiles now use a dedicated target sampler:
+the target day and its previous 22 daily RV observations must be valid. These
+profiles no longer inherit PatchTST intraday-window exclusions.
+
+PatchTST keeps the original 5-minute bars and 6-hour coarse patches, but its
+coarse market lookback is 22 days (88 coarse tokens). Its 30-day news lookback
+is unchanged, so PatchTST still requires 30 calendar days of initial history.
+This revision changes the locked configuration hash: do not reuse scheduler or
+model checkpoints produced with the former 60-day coarse lookback.
+
 This package implements the `main-pilot` workflow defined by
 `BTC_PATCHTST_FINBERT_MODEL_SPEC.md` plus a separately labeled,
 development-only spike diagnostic authorized after the main-pilot result.

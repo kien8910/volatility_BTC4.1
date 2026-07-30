@@ -25,6 +25,7 @@ def test_locked_training_configuration():
     assert config.training_loss == "exact_qlike"
     assert config.seed == 11
     assert config.pca_dim == 8
+    assert config.coarse_lookback_days == 22
     assert config.verified_maintenance_intervals == (
         (
             "binance_spot_upgrade_2021_08_13",

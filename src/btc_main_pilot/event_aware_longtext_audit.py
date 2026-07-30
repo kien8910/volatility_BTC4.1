@@ -966,7 +966,13 @@ def _run_probes(
             fold.name,
         )
         core_dates, validation_dates, test_dates = _block_dates(
-            market, fold, output_dir, logger, include_test=True
+            market,
+            fold,
+            output_dir,
+            logger,
+            include_test=True,
+            config=config,
+            sampling_rule="har_text",
         )
         features = {
             name: _fold_feature(frame, fold, config, logger)

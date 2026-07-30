@@ -96,7 +96,7 @@ class MainPilotConfig:
 
     fine_lookback_days: int = 7
     fine_patch_length: int = 12
-    coarse_lookback_days: int = 60
+    coarse_lookback_days: int = 22
     coarse_patch_length: int = 72
     news_lookback_days: int = 30
     bars_per_day: int = 288
@@ -184,7 +184,7 @@ class MainPilotConfig:
         assert self.amp_grad_scaler_growth_interval == 2000
         assert self.training_loss == "exact_qlike"
         assert self.fine_patch_length == 12 and self.coarse_patch_length == 72
-        assert self.fine_lookback_days == 7 and self.coarse_lookback_days == 60
+        assert self.fine_lookback_days == 7 and self.coarse_lookback_days == 22
         assert self.news_lookback_days == 30
         assert self.embedding_dim == 768
         assert self.channels == 7

@@ -320,7 +320,13 @@ def _run_refit_folds(
             fold.name,
         )
         core_dates, validation_dates, test_dates = _block_dates(
-            market, fold, output_dir, logger, include_test=True
+            market,
+            fold,
+            output_dir,
+            logger,
+            include_test=True,
+            config=config,
+            sampling_rule="har_text",
         )
         train_dates = sorted({*core_dates, *validation_dates})
         if len(train_dates) != len(core_dates) + len(validation_dates):

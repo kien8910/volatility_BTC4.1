@@ -11,9 +11,9 @@ def _batch(batch_size: int = 1) -> dict[str, torch.Tensor]:
         "fine": torch.randn(batch_size, 7, 168, 12),
         "fine_patch_logrv": torch.randn(batch_size, 168),
         "fine_time": torch.randn(batch_size, 168, 4),
-        "coarse": torch.randn(batch_size, 7, 240, 72),
-        "coarse_patch_logrv": torch.randn(batch_size, 240),
-        "coarse_time": torch.randn(batch_size, 240, 4),
+        "coarse": torch.randn(batch_size, 7, 88, 72),
+        "coarse_patch_logrv": torch.randn(batch_size, 88),
+        "coarse_time": torch.randn(batch_size, 88, 4),
         "semantic_slow": torch.randn(batch_size, 30, 8),
         "semantic_fast": torch.randn(batch_size, 30, 8),
         "sentiment_slow": torch.rand(batch_size, 30, 3),
@@ -34,7 +34,7 @@ def test_model_budget_shapes_and_unconditional_initialization():
     built.model.eval()
     with torch.no_grad():
         output = built.model(_batch(1))
-    assert output["market_attention_output"].shape == (1, 408, 32)
+    assert output["market_attention_output"].shape == (1, 256, 32)
     assert torch.isfinite(output["market_attention_output"]).all()
     assert torch.isfinite(output["predicted_rv"]).all()
     np.testing.assert_allclose(

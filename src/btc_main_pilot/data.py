@@ -311,9 +311,13 @@ def sample_dates_for_block(
     market: MarketData,
     start: str,
     end: str,
-    coarse_lookback: int = 60,
+    coarse_lookback: int = 22,
     fine_lookback: int = 7,
+    minimum_calendar_lookback: int | None = None,
 ) -> tuple[list[pd.Timestamp], dict[str, int]]:
+    """Select targets that can construct every PatchTST/news input tensor."""
+    if minimum_calendar_lookback is None:
+        minimum_calendar_lookback = max(coarse_lookback, fine_lookback)
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC")
     candidates = list(market.dates[(market.dates >= start_ts) & (market.dates <= end_ts)])
@@ -321,6 +325,7 @@ def sample_dates_for_block(
     audit = {
         "candidate_target_days": len(candidates),
         "removed_for_invalid_target_day": 0,
+        "removed_for_insufficient_calendar_history": 0,
         "removed_for_incomplete_fine_window": 0,
         "removed_for_incomplete_coarse_window": 0,
         "final_sample_count": 0,
@@ -329,6 +334,9 @@ def sample_dates_for_block(
         index = market.date_to_index[target]
         if not market.valid[index]:
             audit["removed_for_invalid_target_day"] += 1
+            continue
+        if index < minimum_calendar_lookback:
+            audit["removed_for_insufficient_calendar_history"] += 1
             continue
         fine_start = index - fine_lookback
         if fine_start < 0 or not bool(np.all(market.valid[fine_start:index])):
@@ -346,6 +354,55 @@ def sample_dates_for_block(
         )
         if not market.dates[coarse_start:index].equals(expected):
             audit["removed_for_incomplete_coarse_window"] += 1
+            continue
+        kept.append(target)
+    audit["final_sample_count"] = len(kept)
+    return kept, audit
+
+
+def sample_dates_for_har_text_block(
+    market: MarketData,
+    start: str,
+    end: str,
+    rv_lookback: int = 22,
+) -> tuple[list[pd.Timestamp], dict[str, int]]:
+    """Select targets for HAR/Gamma/text/gate models using daily RV only.
+
+    Missing intraday bars still invalidate the affected target day. They do not
+    invalidate the following 60 calendar days: only the 22 daily RV lags that
+    the model actually consumes must be complete and finite.
+    """
+    start_ts = pd.Timestamp(start, tz="UTC")
+    end_ts = pd.Timestamp(end, tz="UTC")
+    candidates = list(market.dates[(market.dates >= start_ts) & (market.dates <= end_ts)])
+    kept: list[pd.Timestamp] = []
+    audit = {
+        "candidate_target_days": len(candidates),
+        "removed_for_invalid_target_day": 0,
+        "removed_for_incomplete_rv_lag_window": 0,
+        "final_sample_count": 0,
+    }
+    for target in candidates:
+        index = market.date_to_index[target]
+        if not market.valid[index] or not np.isfinite(market.log_rv[index]):
+            audit["removed_for_invalid_target_day"] += 1
+            continue
+        history_start = index - rv_lookback
+        if (
+            history_start < 0
+            or not bool(np.all(market.valid[history_start:index]))
+            or not bool(np.isfinite(market.log_rv[history_start:index]).all())
+        ):
+            audit["removed_for_incomplete_rv_lag_window"] += 1
+            continue
+        expected = pd.date_range(
+            target - pd.Timedelta(days=rv_lookback),
+            target - pd.Timedelta(days=1),
+            freq="D",
+            tz="UTC",
+        )
+        if not market.dates[history_start:index].equals(expected):
+            audit["removed_for_incomplete_rv_lag_window"] += 1
             continue
         kept.append(target)
     audit["final_sample_count"] = len(kept)

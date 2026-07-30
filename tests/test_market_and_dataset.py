@@ -4,7 +4,12 @@ import numpy as np
 import pandas as pd
 
 from btc_main_pilot.config import MainPilotConfig
-from btc_main_pilot.data import load_market_data
+from btc_main_pilot.data import (
+    MarketData,
+    load_market_data,
+    sample_dates_for_block,
+    sample_dates_for_har_text_block,
+)
 from btc_main_pilot.dataset import patch_logrv
 
 
@@ -162,3 +167,61 @@ def test_patch_logrv_is_log_sum_raw_squared_returns_not_mean_logs():
     np.testing.assert_allclose(actual, expected)
     mean_log_squared = np.log(returns.reshape(2, 2) ** 2 + 1e-12).mean(axis=1)
     assert not np.allclose(actual, mean_log_squared)
+
+
+def _daily_market(days: int, invalid_index: int | None = None) -> MarketData:
+    dates = pd.date_range("2018-01-01", periods=days, freq="D", tz="UTC")
+    valid = np.ones(days, dtype=bool)
+    if invalid_index is not None:
+        valid[invalid_index] = False
+    rv = np.full(days, 1e-4, dtype=np.float64)
+    log_rv = np.log(rv)
+    rv[~valid] = np.nan
+    log_rv[~valid] = np.nan
+    return MarketData(
+        dates=dates,
+        features=np.zeros((days, 288, 7), dtype=np.float64),
+        raw_returns=np.zeros((days, 288), dtype=np.float64),
+        rv=rv,
+        log_rv=log_rv,
+        valid=valid,
+        zero_volume=np.zeros((days, 288), dtype=bool),
+        maintenance_synthetic=np.zeros((days, 288), dtype=bool),
+        date_to_index={date: index for index, date in enumerate(dates)},
+        audit={},
+    )
+
+
+def test_har_text_sampler_uses_only_the_22_daily_rv_lags():
+    market = _daily_market(90, invalid_index=10)
+    dates, audit = sample_dates_for_har_text_block(
+        market,
+        "2018-01-01",
+        "2018-03-31",
+    )
+    # The invalid day leaves the 22-day lag window at index 33. A legacy
+    # 60-day intraday sampler would still reject this target.
+    assert market.dates[33] in dates
+    assert market.dates[32] not in dates
+    assert audit["final_sample_count"] == len(dates)
+
+
+def test_patchtst_sampler_keeps_30_day_news_burn_in_but_22_market_days():
+    market = _daily_market(40)
+    text_dates, _ = sample_dates_for_har_text_block(
+        market,
+        "2018-01-01",
+        "2018-02-09",
+    )
+    patch_dates, audit = sample_dates_for_block(
+        market,
+        "2018-01-01",
+        "2018-02-09",
+        coarse_lookback=22,
+        fine_lookback=7,
+        minimum_calendar_lookback=30,
+    )
+    assert len(text_dates) == 18
+    assert len(patch_dates) == 10
+    assert patch_dates[0] == pd.Timestamp("2018-01-31", tz="UTC")
+    assert audit["removed_for_insufficient_calendar_history"] == 30

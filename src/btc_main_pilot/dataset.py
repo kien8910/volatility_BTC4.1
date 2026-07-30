@@ -116,10 +116,22 @@ class RVWindowDataset(Dataset):
         return {
             "fine": torch.from_numpy(fine),
             "fine_patch_logrv": torch.from_numpy(fine_logrv),
-            "fine_time": torch.from_numpy(_time_features(target, 7, 24)),
+            "fine_time": torch.from_numpy(
+                _time_features(
+                    target,
+                    self.config.fine_lookback_days,
+                    self.config.bars_per_day // self.config.fine_patch_length,
+                )
+            ),
             "coarse": torch.from_numpy(coarse),
             "coarse_patch_logrv": torch.from_numpy(coarse_logrv),
-            "coarse_time": torch.from_numpy(_time_features(target, 60, 4)),
+            "coarse_time": torch.from_numpy(
+                _time_features(
+                    target,
+                    self.config.coarse_lookback_days,
+                    self.config.bars_per_day // self.config.coarse_patch_length,
+                )
+            ),
             "semantic_slow": torch.from_numpy(
                 self.news.semantic_slow[news_start:news_end]
             ),
