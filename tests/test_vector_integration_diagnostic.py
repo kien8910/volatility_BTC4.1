@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from btc_main_pilot.cli import build_parser
@@ -12,8 +13,11 @@ from btc_main_pilot.vector_integration_diagnostic import (
     HarVectorCrossAttention,
     VectorAttentionDataset,
     _eligible_dates,
+    _config_payload_hash,
+    _validate_vector_scheduler,
     build_core_event_prototype_features,
 )
+from btc_main_pilot.utils import stable_hash
 
 
 def _article(day: str, title: str, text: str, cluster: str) -> FilteredArticle:
@@ -125,3 +129,44 @@ def test_transformer_cross_attention_is_exact_har_at_initialization():
         assert torch.count_nonzero(output["delta_log_rv"]) == 0
         assert model.news_blocks
         assert model.cross_blocks
+
+
+def test_authenticated_legacy_scheduler_allows_only_nontraining_changes(
+    tmp_path,
+):
+    config = MainPilotConfig(profile=PROFILE)
+    archived = MainPilotConfig(profile="main-pilot").to_dict()
+    archived["coarse_lookback_days"] = 60
+    archived["output_dir"] = "outputs/main_pilot"
+    scheduler = {
+        "H_cos": 35,
+        "E_pilot": 32,
+        "config_hash": _config_payload_hash(archived),
+        "pilot_completed_without_numerical_failure": True,
+    }
+    config_path = tmp_path / "config.json"
+    scheduler_path = tmp_path / "scheduler_horizon.json"
+    config_path.write_text(
+        __import__("json").dumps(archived), encoding="utf-8"
+    )
+    scheduler_path.write_text(
+        __import__("json").dumps(scheduler), encoding="utf-8"
+    )
+    loaded, scheduler_hash, audit = _validate_vector_scheduler(
+        config, scheduler_path
+    )
+    assert loaded["H_cos"] == 35
+    assert scheduler_hash == stable_hash(scheduler)
+    assert audit["archived_config_hash_verified"] is True
+    assert "coarse_lookback_days" in audit["allowed_nontraining_differences"]
+
+    archived["learning_rate"] = 1e-3
+    scheduler["config_hash"] = _config_payload_hash(archived)
+    config_path.write_text(
+        __import__("json").dumps(archived), encoding="utf-8"
+    )
+    scheduler_path.write_text(
+        __import__("json").dumps(scheduler), encoding="utf-8"
+    )
+    with pytest.raises(RuntimeError, match="locked training hyperparameters"):
+        _validate_vector_scheduler(config, scheduler_path)

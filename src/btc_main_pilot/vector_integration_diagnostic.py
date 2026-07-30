@@ -106,6 +106,128 @@ MARKET_QUERY_NAMES = (
     "market_logrv_change_1d",
     "market_logrv_std_5d",
 )
+SCHEDULER_RUNTIME_CONFIG_KEYS = (
+    "output_dir",
+    "embedding_cache_path",
+    "physical_batch_size",
+    "num_workers",
+    "smoke",
+    "smoke_start",
+    "smoke_end",
+    "smoke_max_train_batches",
+    "smoke_max_eval_batches",
+    "smoke_epochs",
+)
+SCHEDULER_LOCKED_TRAINING_KEYS = (
+    "seed",
+    "optimizer",
+    "learning_rate",
+    "min_learning_rate",
+    "adam_betas",
+    "adam_epsilon",
+    "weight_decay",
+    "warmup_steps",
+    "provisional_horizon_epochs",
+    "max_epochs",
+    "patience",
+    "min_delta",
+    "gradient_clip_norm",
+    "amp_grad_scaler_initial_scale",
+    "amp_grad_scaler_growth_interval",
+    "effective_batch_size",
+    "training_loss",
+)
+
+
+def _config_payload_hash(payload: dict[str, Any]) -> str:
+    locked = dict(payload)
+    for key in SCHEDULER_RUNTIME_CONFIG_KEYS:
+        locked.pop(key, None)
+    return stable_hash(locked)
+
+
+def _validate_vector_scheduler(
+    config: MainPilotConfig,
+    scheduler_path: Path,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    """Accept an authenticated legacy main scheduler when training locks match."""
+    try:
+        schedule, scheduler_hash = _validate_main_scheduler(
+            config, scheduler_path
+        )
+        return schedule, scheduler_hash, {
+            "mode": "exact_current_config_hash",
+            "scheduler_path": str(scheduler_path),
+            "scheduler_config_hash": schedule["config_hash"],
+            "archived_config_path": None,
+            "training_keys_verified": list(SCHEDULER_LOCKED_TRAINING_KEYS),
+        }
+    except RuntimeError as error:
+        if "locked config hash differs" not in str(error):
+            raise
+
+    schedule = json.loads(scheduler_path.read_text(encoding="utf-8"))
+    if schedule.get("pilot_completed_without_numerical_failure") is not True:
+        raise RuntimeError(
+            "The scheduler does not certify a numerically successful pilot"
+        )
+    h_cos = schedule.get("H_cos")
+    if (
+        not isinstance(h_cos, int)
+        or isinstance(h_cos, bool)
+        or h_cos <= 0
+        or h_cos > config.max_epochs
+    ):
+        raise RuntimeError(f"Invalid legacy scheduler H_cos: {h_cos!r}")
+    archived_path = scheduler_path.parent / "config.json"
+    if not archived_path.exists():
+        raise RuntimeError(
+            "The scheduler config hash differs and its archived main-pilot "
+            f"config is missing: {archived_path}. Do not edit the scheduler; "
+            "copy the matching outputs/main_pilot/config.json or rerun the pilot."
+        )
+    archived = json.loads(archived_path.read_text(encoding="utf-8"))
+    archived_hash = _config_payload_hash(archived)
+    if archived_hash != schedule.get("config_hash"):
+        raise RuntimeError(
+            "Archived main-pilot config does not authenticate the scheduler: "
+            f"computed={archived_hash} scheduler={schedule.get('config_hash')}"
+        )
+    if archived.get("profile") != "main-pilot":
+        raise RuntimeError("Archived scheduler config is not a main-pilot config")
+    current = replace(config, profile="main-pilot").to_dict()
+    mismatches = {
+        key: {"archived": archived.get(key), "current": current.get(key)}
+        for key in SCHEDULER_LOCKED_TRAINING_KEYS
+        if stable_hash(archived.get(key)) != stable_hash(current.get(key))
+    }
+    if mismatches:
+        raise RuntimeError(
+            "Authenticated legacy scheduler differs in locked training "
+            f"hyperparameters: {json.dumps(mismatches, sort_keys=True)}"
+        )
+    changed_nontraining_keys = sorted(
+        key
+        for key in set(archived) | set(current)
+        if key not in SCHEDULER_RUNTIME_CONFIG_KEYS
+        and key not in SCHEDULER_LOCKED_TRAINING_KEYS
+        and stable_hash(archived.get(key)) != stable_hash(current.get(key))
+    )
+    scheduler_hash = stable_hash(schedule)
+    return schedule, scheduler_hash, {
+        "mode": "authenticated_legacy_config_training_locks_match",
+        "scheduler_path": str(scheduler_path),
+        "scheduler_config_hash": schedule["config_hash"],
+        "archived_config_path": str(archived_path),
+        "archived_config_hash_verified": True,
+        "training_keys_verified": list(SCHEDULER_LOCKED_TRAINING_KEYS),
+        "allowed_nontraining_differences": changed_nontraining_keys,
+        "reason": (
+            "The vector diagnostic does not use the legacy PatchTST market "
+            "window, but reuses its authenticated H_cos and identical locked "
+            "optimizer/objective schedule."
+        ),
+    }
 
 
 def _embed_articles(
@@ -1091,7 +1213,7 @@ def run_development_vector_integration_diagnostic(
             "use --smoke locally."
         )
     policy = refined_policy(fit_event_aware_policy(expanded, original))
-    schedule, scheduler_hash = _validate_main_scheduler(
+    schedule, scheduler_hash, scheduler_validation = _validate_vector_scheduler(
         config, scheduler_path
     )
     signature = stable_hash(
@@ -1118,6 +1240,10 @@ def run_development_vector_integration_diagnostic(
             return report
     seed_everything(config.seed)
     write_json(output_dir / "config.json", config.to_dict())
+    write_json(
+        output_dir / "audit" / "scheduler_compatibility.json",
+        scheduler_validation,
+    )
     write_json(output_dir / "audit" / "event_aware_policy.json", asdict(policy))
     silver_evaluation = evaluate_filter_on_silver_holdout(
         silver_path,
@@ -1139,6 +1265,7 @@ def run_development_vector_integration_diagnostic(
             "information_cutoff": "t-1",
             "prototype_fit_scope": "core-only independently by fold",
             "transformer_comparison": "same architecture; slow vs fast state only",
+            "scheduler_validation": scheduler_validation,
             "excluded": [
                 "Fold_5",
                 "final_test",
@@ -1213,6 +1340,7 @@ def run_development_vector_integration_diagnostic(
         "silver_filter_evaluation": silver_evaluation,
         "filter_audit": filter_audit,
         "embedding_audit": embedding_audit,
+        "scheduler_validation": scheduler_validation,
         "candidates": list(CANDIDATES),
         **results,
         "statistical_claim": (
