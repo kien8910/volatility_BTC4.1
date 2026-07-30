@@ -1,0 +1,24 @@
+{
+  "adjudication_enabled": true,
+  "completed_utc": "2026-07-30T06:47:52.936174+00:00",
+  "holdout_n": 366,
+  "output_path": "outputs\\event_aware_longtext_audit\\audit\\gpt_silver_holdout_366.csv",
+  "pass1_pass2_agreement": 0.8524590163934426,
+  "pass1_pass2_cohen_kappa": 0.6643570409618912,
+  "pass1_pass2_disagreement_n": 54,
+  "pass2_model": "gpt-5.6-sol",
+  "scope": "Locked original 366-row holdout; prompts receive title, lead, source and publication time only.",
+  "silver_label_counts": {
+    "irrelevant": 120,
+    "relevant": 242,
+    "uncertain": 4
+  },
+  "statistical_claim": "None. These are GPT-silver labels, not expert ground truth.",
+  "status": "completed",
+  "unresolved_n": 1,
+  "usage": {
+    "input_tokens": 99775,
+    "output_tokens": 49005,
+    "total_tokens": 148780
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "completed_utc": "2026-07-30T05:59:15.811884+00:00",
+  "disagreement_n": 499,
+  "forecast_relevance_counts": {
+    "contextual": 562,
+    "direct": 52,
+    "none": 317,
+    "uncertain": 7,
+    "weak": 262
+  },
+  "label_counts": {
+    "irrelevant": 336,
+    "relevant": 857,
+    "uncertain": 7
+  },
+  "labeled_n": 1200,
+  "model": "gpt-5.6-terra",
+  "prompt_version": "btc-news-relevance-v1",
+  "sample_n": 1200,
+  "sampling": {
+    "actual_size": 1200,
+    "backup_path": "outputs\\news_representation_audit\\audit\\stratified_news_filter_review_original_366.csv",
+    "created_utc": "2026-07-30T05:38:57.666534+00:00",
+    "decision_counts": {
+      "removed": 616,
+      "retained": 584
+    },
+    "decision_quotas_per_stratum": {
+      "removed": 22,
+      "retained": 10
+    },
+    "event_family_counts": {
+      "direct_bitcoin": 231,
+      "exchange_custody": 172,
+      "macro_liquidity": 131,
+      "mining_energy": 77,
+      "other": 137,
+      "other_crypto_context": 155,
+      "price_recap_ta": 27,
+      "regulation_etf": 195,
+      "security_hack": 45,
+      "stablecoin_defi": 30
+    },
+    "original_rows_preserved": 366,
+    "selection": "Deterministic hash-ranked sampling within decision\u00d7year\u00d7evidence_type\u00d7score_band strata. Decision-specific per-stratum quotas are selected to approach the requested size and retained/removed balance. No market outcome is used.",
+    "target_size": 1200,
+    "year_counts": {
+      "2018": 169,
+      "2019": 183,
+      "2020": 168,
+      "2021": 170,
+      "2022": 174,
+      "2023": 173,
+      "2024": 163
+    }
+  },
+  "scope": "development-only news-filter audit; no market outcomes used",
+  "statistical_claim": "None. GPT annotations are weak labels for development audit and require human adjudication.",
+  "status": "completed",
+  "uncertain_n": 7,
+  "usage": {
+    "input_tokens": 266086,
+    "output_tokens": 115149,
+    "total_tokens": 381235
+  },
+  "weighted_filter_diagnostic": {
+    "precision_proxy": 0.916079847017318,
+    "recall_proxy": 0.5698153759509403,
+    "specificity_proxy": 0.8807665295475068,
+    "warning": "GPT labels are weak labels, not human ground truth. Weighted estimates use stratum population/sample weights.",
+    "weighted_cells": {
+      "removed_irrelevant": 21946.5,
+      "removed_relevant": 24484.454545454544,
+      "retained_irrelevant": 2970.999999999999,
+      "retained_relevant": 32431.7
+    }
+  }
+}

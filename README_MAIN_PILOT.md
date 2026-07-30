@@ -216,3 +216,75 @@ The final screen is written to
 `outputs/news_representation_audit/metrics/representation_screen.json`, with
 the complete report at
 `outputs/news_representation_audit/metrics/diagnostic_report.json`.
+
+## GPT-silver event-aware long-text audit
+
+This development-only profile uses the original locked 366-row review as a
+silver evaluation holdout. The remaining rows of the expanded review fit a
+high-recall event-aware news policy. The holdout is relabeled blindly by a
+second GPT model; disagreements with the first pass are independently
+adjudicated. Prompts contain publication time, source, title, and lead only:
+market outcomes and future prices are never sent to the model.
+
+If the expanded 1,200-row GPT review does not already exist, create it first
+(this also preserves the original review as
+`stratified_news_filter_review_original_366.csv`):
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-news-representation-audit \
+  --news data/news_clusters.json \
+  --output-dir outputs/news_representation_audit \
+  --label-news-review \
+  --review-target-size 1200 \
+  --review-model gpt-5.6-terra
+```
+
+Then create the 366-row silver holdout (Windows can reuse the DPAPI credential;
+Linux should provide `OPENAI_API_KEY`):
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-event-aware-longtext-audit \
+  --news data/news_clusters.json \
+  --output-dir outputs/event_aware_longtext_audit \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --label-silver-holdout \
+  --silver-model gpt-5.6-sol \
+  --silver-batch-size 12
+```
+
+The call is resumable through its per-pass JSON caches. It writes
+`outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv` and an
+agreement report. GPT labels are silver proxy labels, not expert ground truth.
+
+Run the CPU-safe smoke test without making API calls:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-event-aware-longtext-audit \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/event_aware_longtext_audit \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --smoke
+```
+
+Then run the full development-only Fold 1-4 audit on CUDA:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-event-aware-longtext-audit \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/event_aware_longtext_audit \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --resume
+```
+
+The predeclared candidates are title only; token-limited title plus lead;
+normalized mean aggregation of token-limited article chunks; separate title
+and content streams; FinBERT slow/fast; and semantic/sentiment surprise norms.
+PCA components are fitted on each fold core only. PCA16 and the previous
+combined-PCA representation are intentionally excluded. Fold 5 and the final
+test are never opened.

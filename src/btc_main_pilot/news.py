@@ -280,6 +280,7 @@ def load_filtered_articles(
     review_buckets: dict[
         tuple[str, int, str, str], list[tuple[str, dict[str, Any]]]
     ] = {}
+    review_bucket_counts: dict[tuple[str, int, str, str], int] = {}
     last_report = time.monotonic()
     for raw in iter_json_array(path):
         counts["records_scanned"] += 1
@@ -314,6 +315,15 @@ def load_filtered_articles(
         evidence = relevance_evidence(title, cleaned)
         decision = "retained" if keep else "removed"
         if stratified_review_per_cell > 0:
+            review_key = (
+                decision,
+                int(timestamp.year),
+                evidence,
+                _review_score_band(score),
+            )
+            review_bucket_counts[review_key] = (
+                review_bucket_counts.get(review_key, 0) + 1
+            )
             _add_stratified_review_candidate(
                 review_buckets,
                 {
@@ -396,6 +406,16 @@ def load_filtered_articles(
             record
             for key in sorted(review_buckets)
             for _, record in review_buckets[key]
+        ],
+        "stratified_review_strata": [
+            {
+                "decision": key[0],
+                "year": key[1],
+                "evidence_type": key[2],
+                "score_band": key[3],
+                "population_n": count,
+            }
+            for key, count in sorted(review_bucket_counts.items())
         ],
         "stratified_review_per_cell": stratified_review_per_cell,
     }
@@ -570,7 +590,7 @@ class OfflineBgeFinbertEncoder:
         ]
 
     @torch.inference_mode()
-    def encode(self, texts: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    def encode_semantic(self, texts: list[str]) -> np.ndarray:
         semantic_inputs = self.semantic_tokenizer(
             texts,
             padding=True,
@@ -585,6 +605,10 @@ class OfflineBgeFinbertEncoder:
             raise AssertionError(
                 f"BGE output dimension {semantic_output.shape[1]} != 768"
             )
+        return semantic_output.float().cpu().numpy()
+
+    @torch.inference_mode()
+    def encode_sentiment(self, texts: list[str]) -> np.ndarray:
         sentiment_inputs = self.sentiment_tokenizer(
             texts,
             padding=True,
@@ -597,10 +621,10 @@ class OfflineBgeFinbertEncoder:
         }
         logits = self.sentiment_model(**sentiment_inputs).logits
         probabilities = torch.softmax(logits, dim=-1)[:, self.output_order]
-        return (
-            semantic_output.float().cpu().numpy(),
-            probabilities.float().cpu().numpy(),
-        )
+        return probabilities.float().cpu().numpy()
+
+    def encode(self, texts: list[str]) -> tuple[np.ndarray, np.ndarray]:
+        return self.encode_semantic(texts), self.encode_sentiment(texts)
 
 
 class DeterministicSmokeEncoder:
@@ -609,20 +633,30 @@ class DeterministicSmokeEncoder:
     def __init__(self, embedding_dim: int = 768):
         self.embedding_dim = embedding_dim
 
-    def encode(self, texts: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    def encode_semantic(self, texts: list[str]) -> np.ndarray:
         semantics = []
-        sentiments = []
         for text in texts:
             seed = int(stable_hash(text)[:16], 16) % (2**32)
             rng = np.random.default_rng(seed)
             vector = rng.standard_normal(self.embedding_dim).astype(np.float32)
             vector /= max(float(np.linalg.norm(vector)), 1e-12)
+            semantics.append(vector)
+        return np.stack(semantics)
+
+    def encode_sentiment(self, texts: list[str]) -> np.ndarray:
+        sentiments = []
+        for text in texts:
+            seed = int(stable_hash(text)[:16], 16) % (2**32)
+            rng = np.random.default_rng(seed)
+            rng.standard_normal(self.embedding_dim)
             logits = rng.normal(size=3)
             probs = np.exp(logits - np.max(logits))
             probs /= probs.sum()
-            semantics.append(vector)
             sentiments.append(probs.astype(np.float32))
-        return np.stack(semantics), np.stack(sentiments)
+        return np.stack(sentiments)
+
+    def encode(self, texts: list[str]) -> tuple[np.ndarray, np.ndarray]:
+        return self.encode_semantic(texts), self.encode_sentiment(texts)
 
 
 def embed_articles(
