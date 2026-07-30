@@ -29,6 +29,10 @@ from .regime_anchor_diagnostic import (
     run_development_regime_anchor_diagnostic,
     run_regime_anchor_smoke,
 )
+from .tail_regime_diagnostic import (
+    run_development_tail_regime_diagnostic,
+    run_tail_regime_smoke,
+)
 from .spike_diagnostic import (
     run_development_spike_diagnostic,
     run_spike_diagnostic_smoke,
@@ -54,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
             "development-event-aware-longtext-audit",
             "development-point-in-time-gate-diagnostic",
             "development-point-in-time-refit-diagnostic",
+            "development-tail-regime-diagnostic",
         ],
         default="main-pilot",
         help="Development diagnostics run Fold 1-4 only and never open final test.",
@@ -194,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
         "development-point-in-time-refit-diagnostic": (
             "outputs/point_in_time_refit_diagnostic"
         ),
+        "development-tail-regime-diagnostic": (
+            "outputs/tail_regime_diagnostic"
+        ),
     }
     output_dir = args.output_dir or default_outputs[args.profile]
     embedding_cache = args.embedding_cache
@@ -313,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
             == "development-point-in-time-refit-diagnostic"
         ):
             report = run_point_in_time_refit_smoke(config, logger)
+        elif args.profile == "development-tail-regime-diagnostic":
+            report = run_tail_regime_smoke(config, logger)
         else:
             report = run_smoke(config, logger, resume=args.resume)
         logger.info(
@@ -364,6 +374,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.profile == "development-point-in-time-refit-diagnostic":
         run_development_point_in_time_refit_diagnostic(
+            config,
+            logger,
+            review_audit_dir=Path(args.review_audit_dir),
+            silver_path=Path(args.silver_holdout_path),
+            longtext_cache_path=Path(args.longtext_cache),
+            resume=args.resume,
+        )
+    elif args.profile == "development-tail-regime-diagnostic":
+        run_development_tail_regime_diagnostic(
             config,
             logger,
             review_audit_dir=Path(args.review_audit_dir),

@@ -412,3 +412,62 @@ results are saved below `after_refit/`. The direct comparison files are
 `metrics/diagnostic_report.json`. Fold 5, final test, PatchTST retraining,
 MCS, five-seed evaluation, realized-spike oracle routing, and any test-based
 model selection remain excluded.
+
+## Tail-information and temporal-regime diagnostic
+
+This development-only follow-up first audits every P90 OOS spike in Fold 1-4.
+For each target day `t`, it records the filtered news actually available on
+`t-1` and separately records target-day news as a post-hoc availability
+diagnostic. Columns prefixed `target_day_posthoc_` are never passed to a
+forecast model.
+
+The profile then evaluates exactly six configurations:
+
+- expanding, rolling 730 calendar days, and exponential weighting with a
+  365-day half-life;
+- crossed with a FinBERT slow/fast normal correction and a FinBERT +
+  semantic/sentiment surprise + news/source-count soft tail mixture.
+
+The anchor is always fold-core HAR-QLIKE. The soft gate predicts a core-only
+P80 tail label; reporting still uses the locked core-only P90 spike
+definition. Gamma penalties are selected on validation exact QLIKE and a
+candidate falls back to HAR unless it improves validation by at least
+`1e-5`. No realized test spike is used for routing or fitting.
+
+Run the CPU-safe smoke test:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-tail-regime-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/tail_regime_diagnostic \
+  --smoke \
+  --no-resume
+```
+
+Run the full Fold 1-4 diagnostic on a CUDA server:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-tail-regime-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/tail_regime_diagnostic \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+The main artifacts are:
+
+- `audit/spike_information_set_audit.csv`;
+- `metrics/fold_metrics.csv` and `metrics/pooled_metrics.csv`;
+- `metrics/selection_diagnostic.json`;
+- `metrics/diagnostic_report.json`;
+- fold/config validation and OOS predictions under `predictions/`.
+
+The profile never opens Fold 5, final test, the COVID fold, or MCS; it does
+not run PatchTST, chunk embeddings, PCA16, five seeds, or post-selection
+refitting.
