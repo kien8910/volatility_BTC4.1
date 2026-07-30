@@ -515,3 +515,58 @@ per-fold validation/OOS predictions, checkpoints and training histories,
 prototype metadata, fold/pooled metrics, the development screen, and
 `metrics/diagnostic_report.json`. Fold 5/final test, COVID, MCS, PCA16,
 combined PCA, five seeds, and post-validation refit remain excluded.
+
+## Slow-update Transformer v2 diagnostic
+
+This development-only Fold 1-4 profile follows the slow-vector result with a
+strictly incremental architecture comparison:
+
+- `slow_calendar_control`: the prior 30-calendar-day slow Transformer;
+- `slow_update_tokens`: one current slow-level token plus masked tokens only
+  when retained news updates the slow state;
+- `slow_update_multiquery`: separate daily, weekly, and monthly HAR market
+  queries attending to the same update sequence;
+- `slow_update_multiquery_gated`: a point-in-time gate scales the neural
+  correction using only information through `t-1`;
+- `finbert_normal_slow_blend`: a validation-selected convex log-forecast
+  blend with the gated model;
+- `core_centered_event_prototypes`: FinBERT plus core-centered BGE family
+  margins, defined as own-family cosine minus the strongest alternative
+  family cosine.
+
+Every scaler, embedding center, event prototype, Gamma penalty, checkpoint,
+and blend weight is fitted or selected without test outcomes. Neural
+correction heads remain zero-initialized, making epoch 0 exactly HAR-QLIKE.
+
+CPU smoke:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-slow-transformer-v2-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/slow_transformer_v2_diagnostic \
+  --smoke \
+  --no-resume
+```
+
+Full CUDA run:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-slow-transformer-v2-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/slow_transformer_v2_diagnostic \
+  --scheduler-path outputs/main_pilot/scheduler_horizon.json \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+The profile writes validation/OOS predictions, resumable checkpoints,
+training histories, blend grids, directional-prototype audits, fold/pooled
+metrics, top-spike influence sensitivity, and
+`metrics/diagnostic_report.json`. Fold 5/final test, realized-spike routing,
+MCS, five seeds, PCA16, combined PCA, and post-validation refit are excluded.

@@ -37,6 +37,10 @@ from .vector_integration_diagnostic import (
     run_development_vector_integration_diagnostic,
     run_vector_integration_smoke,
 )
+from .slow_transformer_v2_diagnostic import (
+    run_development_slow_transformer_v2_diagnostic,
+    run_slow_transformer_v2_smoke,
+)
 from .spike_diagnostic import (
     run_development_spike_diagnostic,
     run_spike_diagnostic_smoke,
@@ -64,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
             "development-point-in-time-refit-diagnostic",
             "development-tail-regime-diagnostic",
             "development-vector-integration-diagnostic",
+            "development-slow-transformer-v2-diagnostic",
         ],
         default="main-pilot",
         help="Development diagnostics run Fold 1-4 only and never open final test.",
@@ -210,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
         "development-vector-integration-diagnostic": (
             "outputs/vector_integration_diagnostic"
         ),
+        "development-slow-transformer-v2-diagnostic": (
+            "outputs/slow_transformer_v2_diagnostic"
+        ),
     }
     output_dir = args.output_dir or default_outputs[args.profile]
     embedding_cache = args.embedding_cache
@@ -333,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
             report = run_tail_regime_smoke(config, logger)
         elif args.profile == "development-vector-integration-diagnostic":
             report = run_vector_integration_smoke(config, logger)
+        elif args.profile == "development-slow-transformer-v2-diagnostic":
+            report = run_slow_transformer_v2_smoke(config, logger)
         else:
             report = run_smoke(config, logger, resume=args.resume)
         logger.info(
@@ -402,6 +412,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.profile == "development-vector-integration-diagnostic":
         run_development_vector_integration_diagnostic(
+            config,
+            logger,
+            review_audit_dir=Path(args.review_audit_dir),
+            silver_path=Path(args.silver_holdout_path),
+            longtext_cache_path=Path(args.longtext_cache),
+            scheduler_path=Path(args.scheduler_path),
+            resume=args.resume,
+        )
+    elif args.profile == "development-slow-transformer-v2-diagnostic":
+        run_development_slow_transformer_v2_diagnostic(
             config,
             logger,
             review_audit_dir=Path(args.review_audit_dir),

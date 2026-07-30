@@ -172,6 +172,7 @@ class MainPilotConfig:
             "development-point-in-time-refit-diagnostic",
             "development-tail-regime-diagnostic",
             "development-vector-integration-diagnostic",
+            "development-slow-transformer-v2-diagnostic",
         }
         assert self.seed == 11
         assert self.pca_dim == 8
