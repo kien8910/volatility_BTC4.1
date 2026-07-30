@@ -9,7 +9,13 @@ from torch import nn
 
 from .config import MainPilotConfig
 
-ModelVariant = Literal["main", "market_only", "hybrid_har"]
+ModelVariant = Literal[
+    "main",
+    "market_only",
+    "hybrid_har",
+    "har_anchor_market",
+    "har_anchor_market_text",
+]
 
 
 def sinusoidal_encoding(length: int, d_model: int, device: torch.device) -> torch.Tensor:
@@ -101,15 +107,49 @@ class MainPatchTST(nn.Module):
         unconditional_mean_rv: float,
         forecast_queries: int,
         variant: ModelVariant = "main",
+        har_anchor_intercept: float | None = None,
+        har_anchor_coefficients: list[float] | None = None,
     ):
         super().__init__()
-        if variant not in {"main", "market_only", "hybrid_har"}:
+        if variant not in {
+            "main",
+            "market_only",
+            "hybrid_har",
+            "har_anchor_market",
+            "har_anchor_market_text",
+        }:
             raise ValueError(f"Unsupported model variant: {variant}")
         d = config.d_model
         self.config = config
         self.variant = variant
-        self.uses_news = variant != "market_only"
+        self.uses_news = variant in {
+            "main",
+            "hybrid_har",
+            "har_anchor_market_text",
+        }
         self.uses_har = variant == "hybrid_har"
+        self.uses_har_anchor = variant in {
+            "har_anchor_market",
+            "har_anchor_market_text",
+        }
+        if self.uses_har_anchor:
+            if har_anchor_intercept is None or har_anchor_coefficients is None:
+                raise ValueError(
+                    f"{variant} requires a fitted core-train HAR-QLIKE anchor"
+                )
+            if len(har_anchor_coefficients) != 3:
+                raise ValueError("HAR-QLIKE anchor must have three coefficients")
+            self.register_buffer(
+                "har_anchor_intercept",
+                torch.tensor(float(har_anchor_intercept), dtype=torch.float64),
+            )
+            self.register_buffer(
+                "har_anchor_coefficients",
+                torch.tensor(har_anchor_coefficients, dtype=torch.float64),
+            )
+        else:
+            self.register_buffer("har_anchor_intercept", None)
+            self.register_buffer("har_anchor_coefficients", None)
         self.forecast_query_count = forecast_queries
         self.register_buffer(
             "target_mean", torch.tensor(float(target_mean), dtype=torch.float64)
@@ -178,7 +218,7 @@ class MainPatchTST(nn.Module):
             self.pool_projection = nn.Identity()
         else:
             raise ValueError("Forecast query count must be exactly 4 or 1")
-        head_scalar_count = 0 if variant == "market_only" else 2
+        head_scalar_count = 2 if self.uses_news else 0
         if self.uses_har:
             head_scalar_count += 3
         self.forecast_head = nn.Sequential(
@@ -191,8 +231,13 @@ class MainPatchTST(nn.Module):
         assert isinstance(output_layer, nn.Linear)
         nn.init.zeros_(output_layer.weight)
         initial_z = (
-            math.log(float(unconditional_mean_rv)) - float(target_mean)
-        ) / float(target_scale)
+            0.0
+            if self.uses_har_anchor
+            else (
+                math.log(float(unconditional_mean_rv)) - float(target_mean)
+            )
+            / float(target_scale)
+        )
         nn.init.constant_(output_layer.bias, initial_z)
 
     def _encode_market_scale(
@@ -293,16 +338,35 @@ class MainPatchTST(nn.Module):
         # overflow at an autocast float16 output boundary.
         with torch.autocast(device_type=forecast_input.device.type, enabled=False):
             forecast_z = self.forecast_head(forecast_input.float()).squeeze(-1)
-        predicted_log_rv = (
-            self.target_mean + self.target_scale * forecast_z.double()
-        )
+        delta_log_rv = self.target_scale * forecast_z.double()
+        if self.uses_har_anchor:
+            if (
+                self.har_anchor_intercept is None
+                or self.har_anchor_coefficients is None
+            ):
+                raise RuntimeError("HAR anchor buffers are unavailable")
+            raw_har = (
+                batch["har_scalars"].double() * self.target_scale
+                + self.target_mean
+            )
+            har_anchor_log_rv = self.har_anchor_intercept + torch.sum(
+                raw_har * self.har_anchor_coefficients, dim=-1
+            )
+            predicted_log_rv = har_anchor_log_rv + delta_log_rv
+        else:
+            har_anchor_log_rv = None
+            predicted_log_rv = self.target_mean + delta_log_rv
         predicted_rv = torch.exp(predicted_log_rv)
-        return {
+        result = {
             "forecast_z": forecast_z,
+            "delta_log_rv": delta_log_rv,
             "predicted_log_rv": predicted_log_rv,
             "predicted_rv": predicted_rv,
             "market_attention_output": market,
         }
+        if har_anchor_log_rv is not None:
+            result["har_anchor_log_rv"] = har_anchor_log_rv
+        return result
 
 
 def trainable_parameter_count(model: nn.Module) -> int:
@@ -323,6 +387,8 @@ def build_model(
     target_scale: float,
     unconditional_mean_rv: float,
     variant: ModelVariant = "main",
+    har_anchor_intercept: float | None = None,
+    har_anchor_coefficients: list[float] | None = None,
 ) -> BuiltModel:
     model = MainPatchTST(
         config,
@@ -331,6 +397,8 @@ def build_model(
         unconditional_mean_rv,
         forecast_queries=4,
         variant=variant,
+        har_anchor_intercept=har_anchor_intercept,
+        har_anchor_coefficients=har_anchor_coefficients,
     )
     count = trainable_parameter_count(model)
     queries = 4
@@ -342,6 +410,8 @@ def build_model(
             unconditional_mean_rv,
             forecast_queries=1,
             variant=variant,
+            har_anchor_intercept=har_anchor_intercept,
+            har_anchor_coefficients=har_anchor_coefficients,
         )
         count = trainable_parameter_count(model)
         queries = 1

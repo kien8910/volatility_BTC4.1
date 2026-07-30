@@ -20,6 +20,33 @@ class BaselineResult:
     metadata: dict[str, Any]
 
 
+@dataclass
+class HarQlikeFit:
+    intercept: float
+    coefficients: np.ndarray
+    n_iter: int
+    convergence_warnings: list[str]
+
+    def predict_log_rv(
+        self,
+        market: MarketData,
+        dates: list[pd.Timestamp],
+    ) -> np.ndarray:
+        values = self.intercept + _har_features(market, dates) @ self.coefficients
+        ensure_finite("HAR-QLIKE anchor log prediction", values)
+        return values
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "intercept": self.intercept,
+            "coefficients": self.coefficients.tolist(),
+            "n_iter": self.n_iter,
+            "convergence_warnings": self.convergence_warnings,
+            "fit_scope": "core_train_only",
+            "features": ["logRV_d", "logRV_w", "logRV_m"],
+        }
+
+
 def _har_features(market: MarketData, dates: list[pd.Timestamp]) -> np.ndarray:
     rows = []
     for date in dates:
@@ -31,33 +58,15 @@ def _har_features(market: MarketData, dates: list[pd.Timestamp]) -> np.ndarray:
     return np.asarray(rows, dtype=np.float64)
 
 
-def fit_baselines(
+def fit_har_qlike(
     market: MarketData,
     core_dates: list[pd.Timestamp],
-    test_dates: list[pd.Timestamp],
-) -> list[BaselineResult]:
+) -> HarQlikeFit:
     x_core = _har_features(market, core_dates)
-    x_test = _har_features(market, test_dates)
-    y_core = np.asarray(
-        [market.log_rv[market.date_to_index[date]] for date in core_dates],
+    rv_core = np.asarray(
+        [market.rv[market.date_to_index[date]] for date in core_dates],
         dtype=np.float64,
     )
-    rv_core = np.exp(y_core)
-    true_test = np.asarray(
-        [market.rv[market.date_to_index[date]] for date in test_dates],
-        dtype=np.float64,
-    )
-    true_log_test = np.log(true_test)
-
-    rw_log = x_test[:, 0]
-    rw_rv = np.exp(rw_log)
-    ols = LinearRegression(fit_intercept=True).fit(x_core, y_core)
-    ols_log = ols.predict(x_test)
-    residuals = y_core - ols.predict(x_core)
-    smearing = float(np.mean(np.exp(residuals)))
-    ols_rv = smearing * np.exp(ols_log)
-
-    convergence_messages = []
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", ConvergenceWarning)
         gamma = GammaRegressor(
@@ -78,8 +87,46 @@ def fit_baselines(
         raise RuntimeError(
             "HAR-QLIKE did not converge: " + "; ".join(convergence_messages)
         )
-    gamma_rv = gamma.predict(x_test)
-    gamma_log = np.log(gamma_rv)
+    fit = HarQlikeFit(
+        intercept=float(gamma.intercept_),
+        coefficients=np.asarray(gamma.coef_, dtype=np.float64),
+        n_iter=int(gamma.n_iter_),
+        convergence_warnings=convergence_messages,
+    )
+    ensure_finite("HAR-QLIKE anchor coefficients", fit.coefficients)
+    if not np.isfinite(fit.intercept):
+        raise FloatingPointError("HAR-QLIKE anchor intercept is NaN/Inf")
+    return fit
+
+
+def fit_baselines(
+    market: MarketData,
+    core_dates: list[pd.Timestamp],
+    test_dates: list[pd.Timestamp],
+) -> list[BaselineResult]:
+    x_core = _har_features(market, core_dates)
+    x_test = _har_features(market, test_dates)
+    y_core = np.asarray(
+        [market.log_rv[market.date_to_index[date]] for date in core_dates],
+        dtype=np.float64,
+    )
+    true_test = np.asarray(
+        [market.rv[market.date_to_index[date]] for date in test_dates],
+        dtype=np.float64,
+    )
+    true_log_test = np.log(true_test)
+
+    rw_log = x_test[:, 0]
+    rw_rv = np.exp(rw_log)
+    ols = LinearRegression(fit_intercept=True).fit(x_core, y_core)
+    ols_log = ols.predict(x_test)
+    residuals = y_core - ols.predict(x_core)
+    smearing = float(np.mean(np.exp(residuals)))
+    ols_rv = smearing * np.exp(ols_log)
+
+    gamma = fit_har_qlike(market, core_dates)
+    gamma_log = gamma.predict_log_rv(market, test_dates)
+    gamma_rv = np.exp(gamma_log)
     for name, values in [
         ("random_walk", rw_rv),
         ("har_ols", ols_rv),
@@ -121,9 +168,7 @@ def fit_baselines(
                 "alpha": 0.0,
                 "solver": "lbfgs",
                 "analytic_gradient": True,
-                "n_iter": int(gamma.n_iter_),
-                "convergence_warnings": convergence_messages,
+                **gamma.metadata(),
             },
         ),
     ]
-

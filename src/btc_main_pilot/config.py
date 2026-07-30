@@ -68,6 +68,10 @@ SPIKE_DIAGNOSTIC_VARIANTS = (
     "market_only",
     "hybrid_har",
 )
+REGIME_ANCHOR_VARIANTS = (
+    "har_anchor_market",
+    "har_anchor_market_text",
+)
 
 
 @dataclass
@@ -161,6 +165,7 @@ class MainPilotConfig:
         assert self.profile in {
             "main-pilot",
             "development-spike-diagnostic",
+            "development-regime-anchor-diagnostic",
         }
         assert self.seed == 11
         assert self.pca_dim == 8

@@ -87,6 +87,62 @@ def test_locked_spike_diagnostic_variants_forward_and_initialize():
     assert counts["market_only"] < counts["main"] < counts["hybrid_har"]
 
 
+def test_har_anchor_variants_initialize_exactly_at_core_only_har_prediction():
+    config = MainPilotConfig()
+    batch = _batch(2)
+    target_mean = -9.0
+    target_scale = 1.5
+    intercept = -8.25
+    coefficients = [0.2, 0.3, 0.4]
+    raw_har = batch["har_scalars"].double() * target_scale + target_mean
+    expected_log = intercept + raw_har @ torch.tensor(
+        coefficients, dtype=torch.float64
+    )
+    counts = {}
+    for variant in ("har_anchor_market", "har_anchor_market_text"):
+        built = build_model(
+            config,
+            target_mean=target_mean,
+            target_scale=target_scale,
+            unconditional_mean_rv=2.5e-4,
+            variant=variant,
+            har_anchor_intercept=intercept,
+            har_anchor_coefficients=coefficients,
+        )
+        built.model.eval()
+        with torch.no_grad():
+            output = built.model(batch)
+        np.testing.assert_allclose(
+            output["predicted_log_rv"].numpy(),
+            expected_log.numpy(),
+            rtol=1e-12,
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            output["delta_log_rv"].numpy(),
+            np.zeros(2),
+            rtol=0,
+            atol=0,
+        )
+        counts[variant] = built.parameter_count
+    assert counts["har_anchor_market"] < counts["har_anchor_market_text"]
+
+
+def test_har_anchor_requires_core_fitted_parameters():
+    config = MainPilotConfig()
+    try:
+        build_model(
+            config,
+            target_mean=-9.0,
+            target_scale=1.5,
+            unconditional_mean_rv=2.5e-4,
+            variant="har_anchor_market",
+        )
+        raise AssertionError("Missing HAR anchor should fail")
+    except ValueError as error:
+        assert "HAR-QLIKE anchor" in str(error)
+
+
 def test_all_masked_news_keys_are_rejected_and_null_must_be_unmasked():
     block = CrossAttentionBlock(32, 4, 64, 0.1)
     query = torch.randn(2, 5, 32)

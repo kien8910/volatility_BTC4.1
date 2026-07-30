@@ -106,3 +106,47 @@ The runner writes per-fold predictions/metrics, pooled Fold 1-4 results,
 worst-loss days, and the predeclared 3-of-4-fold spike screen under
 `outputs/spike_diagnostic`. A completed run is skipped safely by `--resume`;
 partial compatible checkpoints resume normally.
+
+## Development-only HAR-anchor regime diagnostic
+
+This follow-up runs exactly 8 experiments: rolling Fold 1-4 crossed with
+`har_anchor_market` and `har_anchor_market_text`, always with seed 11 and
+exact QLIKE. For every fold, HAR-QLIKE is fitted on the core block only.
+Epoch 0 is exactly that HAR forecast because the neural correction head is
+initialized to zero. The neural correction is retained only if validation
+QLIKE improves by at least `1e-5`; otherwise the saved best checkpoint remains
+epoch 0. This isolates the incremental value of text while limiting damage
+from regime shifts.
+
+Run the CPU-safe two-variant smoke test:
+
+```bash
+PYTHONPATH=src python -m btc_main_pilot \
+  --profile development-regime-anchor-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/regime_anchor_diagnostic \
+  --smoke \
+  --no-resume
+```
+
+Run all 8 development experiments on a CUDA server:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-regime-anchor-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/regime_anchor_diagnostic \
+  --embedding-cache outputs/main_pilot/cache/article_embeddings.sqlite \
+  --scheduler-path outputs/main_pilot/scheduler_horizon.json \
+  --physical-batch-size 32 \
+  --num-workers 4 \
+  --resume \
+  --confirm-news-filter-reviewed
+```
+
+The report is written to
+`outputs/regime_anchor_diagnostic/metrics/diagnostic_report.json`. Per-run
+validation and development-OOS predictions include both the HAR anchor and
+the learned log-RV correction. Fold 5 and the final test remain unopened.

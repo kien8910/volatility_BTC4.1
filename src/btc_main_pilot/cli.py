@@ -6,6 +6,10 @@ from pathlib import Path
 
 from .config import MainPilotConfig
 from .pipeline import run_main_pilot, run_review_only, run_smoke
+from .regime_anchor_diagnostic import (
+    run_development_regime_anchor_diagnostic,
+    run_regime_anchor_smoke,
+)
 from .spike_diagnostic import (
     run_development_spike_diagnostic,
     run_spike_diagnostic_smoke,
@@ -17,15 +21,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="btc-main-pilot",
         description=(
-            "Run the locked main-pilot or its separate development-only "
-            "spike diagnostic."
+            "Run the locked main-pilot or a separate development-only "
+            "diagnostic."
         ),
     )
     parser.add_argument(
         "--profile",
-        choices=["main-pilot", "development-spike-diagnostic"],
+        choices=[
+            "main-pilot",
+            "development-spike-diagnostic",
+            "development-regime-anchor-diagnostic",
+        ],
         default="main-pilot",
-        help="The spike diagnostic runs Fold 1-4 only and never opens final test.",
+        help="Development diagnostics run Fold 1-4 only and never open final test.",
     )
     parser.add_argument(
         "--market",
@@ -37,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedding-cache",
         default=None,
         help=(
-            "Optional shared article-embedding SQLite cache. The diagnostic "
+            "Optional shared article-embedding SQLite cache. Diagnostics "
             "defaults to outputs/main_pilot/cache/article_embeddings.sqlite."
         ),
     )
@@ -80,14 +88,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    output_dir = args.output_dir or (
-        "outputs/spike_diagnostic"
-        if args.profile == "development-spike-diagnostic"
-        else "outputs/main_pilot"
-    )
+    default_outputs = {
+        "main-pilot": "outputs/main_pilot",
+        "development-spike-diagnostic": "outputs/spike_diagnostic",
+        "development-regime-anchor-diagnostic": (
+            "outputs/regime_anchor_diagnostic"
+        ),
+    }
+    output_dir = args.output_dir or default_outputs[args.profile]
     embedding_cache = args.embedding_cache
     if (
-        args.profile == "development-spike-diagnostic"
+        args.profile != "main-pilot"
         and embedding_cache is None
     ):
         embedding_cache = "outputs/main_pilot/cache/article_embeddings.sqlite"
@@ -107,11 +118,16 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("REVIEW SAMPLE READY | %s", review_path)
         return 0
     if args.smoke:
-        report = (
-            run_spike_diagnostic_smoke(config, logger, resume=args.resume)
-            if args.profile == "development-spike-diagnostic"
-            else run_smoke(config, logger, resume=args.resume)
-        )
+        if args.profile == "development-spike-diagnostic":
+            report = run_spike_diagnostic_smoke(
+                config, logger, resume=args.resume
+            )
+        elif args.profile == "development-regime-anchor-diagnostic":
+            report = run_regime_anchor_smoke(
+                config, logger, resume=args.resume
+            )
+        else:
+            report = run_smoke(config, logger, resume=args.resume)
         logger.info(
             "SMOKE %s | %s",
             report["status"].upper(),
@@ -120,6 +136,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.profile == "development-spike-diagnostic":
         run_development_spike_diagnostic(
+            config,
+            logger,
+            resume=args.resume,
+            confirm_news_filter_reviewed=args.confirm_news_filter_reviewed,
+            scheduler_path=Path(args.scheduler_path),
+        )
+    elif args.profile == "development-regime-anchor-diagnostic":
+        run_development_regime_anchor_diagnostic(
             config,
             logger,
             resume=args.resume,

@@ -138,6 +138,7 @@ def train_model(
     max_epochs_override: int | None = None,
     max_train_batches: int | None = None,
     max_eval_batches: int | None = None,
+    include_epoch_zero_checkpoint: bool = False,
 ) -> TrainingResult:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     generator = torch.Generator().manual_seed(config.seed)
@@ -183,7 +184,9 @@ def train_model(
     history: list[dict[str, Any]] = []
     last_path = checkpoint_dir / "last.pt"
     best_path = checkpoint_dir / "best.pt"
+    resumed_checkpoint = False
     if resume and last_path.exists():
+        resumed_checkpoint = True
         state = torch.load(last_path, map_location=device, weights_only=False)
         if state["preprocessor_hash"] != preprocessor_hash:
             raise RuntimeError("Resume checkpoint preprocessor hash mismatch")
@@ -213,6 +216,89 @@ def train_model(
     numerical_failure = False
     failure_reason = None
     optimizer.zero_grad(set_to_none=True)
+
+    def checkpoint_metadata() -> dict[str, Any]:
+        return {
+            "fold": fold_name,
+            "model_variant": model.variant,
+            "seed": config.seed,
+            "objective": config.training_loss,
+            "preprocessor_hash": preprocessor_hash,
+            "scheduler_hash": scheduler_hash,
+            "horizon_epochs": horizon_epochs,
+            "T_floor": floor_step,
+            "parameter_count": trainable_parameter_count(model),
+            "epoch_zero_candidate": include_epoch_zero_checkpoint,
+            "training_config": {
+                "optimizer": config.optimizer,
+                "learning_rate": config.learning_rate,
+                "weight_decay": config.weight_decay,
+                "adam_betas": config.adam_betas,
+                "adam_epsilon": config.adam_epsilon,
+                "warmup_steps": config.warmup_steps,
+                "scheduler": "linear_warmup_then_cosine_to_floor",
+                "min_learning_rate": config.min_learning_rate,
+                "max_epochs": config.max_epochs,
+                "patience": config.patience,
+                "min_delta": config.min_delta,
+                "gradient_clip_norm": config.gradient_clip_norm,
+                "amp_dtype": "float16_on_cuda",
+                "forecast_head_dtype": "float32",
+                "amp_grad_scaler_initial_scale": (
+                    config.amp_grad_scaler_initial_scale
+                ),
+                "amp_grad_scaler_growth_interval": (
+                    config.amp_grad_scaler_growth_interval
+                ),
+                "effective_batch_size": config.effective_batch_size,
+            },
+        }
+
+    if include_epoch_zero_checkpoint and not resumed_checkpoint:
+        initial_validation = evaluate_loader(
+            model,
+            validation_loader,
+            device,
+            max_batches=max_eval_batches,
+        )
+        best_epoch = 0
+        best_validation = initial_validation
+        initial_row = {
+            "epoch": 0,
+            "train_qlike": None,
+            "validation_qlike": initial_validation,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+            "gradient_norm": None,
+            "amp_scale": scaler.get_scale(),
+            "improved": True,
+            "stale_epochs": 0,
+            "checkpoint_role": "HAR_QLIKE_anchor_before_neural_correction",
+        }
+        history.append(initial_row)
+        metadata = checkpoint_metadata()
+        initial_state = {
+            "epoch": 0,
+            "best_epoch": 0,
+            "best_validation": initial_validation,
+            "stale_epochs": 0,
+            "history": history,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "grad_scaler": scaler.state_dict(),
+            **metadata,
+        }
+        torch.save(initial_state, last_path)
+        torch.save(initial_state, best_path)
+        pd.DataFrame(history).to_csv(
+            checkpoint_dir / "training_history.csv", index=False
+        )
+        write_json(checkpoint_dir / "checkpoint_metadata.json", metadata)
+        logger.info(
+            "INITIAL VALIDATE | fold=%s epoch=000 HAR_anchor_qlike=%.8f",
+            fold_name,
+            initial_validation,
+        )
     try:
         for epoch in range(start_epoch, max_epochs + 1):
             model.train()
@@ -318,40 +404,7 @@ def train_model(
                 "stale_epochs": stale_epochs,
             }
             history.append(row)
-            metadata = {
-                "fold": fold_name,
-                "model_variant": model.variant,
-                "seed": config.seed,
-                "objective": config.training_loss,
-                "preprocessor_hash": preprocessor_hash,
-                "scheduler_hash": scheduler_hash,
-                "horizon_epochs": horizon_epochs,
-                "T_floor": floor_step,
-                "parameter_count": trainable_parameter_count(model),
-                "training_config": {
-                    "optimizer": config.optimizer,
-                    "learning_rate": config.learning_rate,
-                    "weight_decay": config.weight_decay,
-                    "adam_betas": config.adam_betas,
-                    "adam_epsilon": config.adam_epsilon,
-                    "warmup_steps": config.warmup_steps,
-                    "scheduler": "linear_warmup_then_cosine_to_floor",
-                    "min_learning_rate": config.min_learning_rate,
-                    "max_epochs": config.max_epochs,
-                    "patience": config.patience,
-                    "min_delta": config.min_delta,
-                    "gradient_clip_norm": config.gradient_clip_norm,
-                    "amp_dtype": "float16_on_cuda",
-                    "forecast_head_dtype": "float32",
-                    "amp_grad_scaler_initial_scale": (
-                        config.amp_grad_scaler_initial_scale
-                    ),
-                    "amp_grad_scaler_growth_interval": (
-                        config.amp_grad_scaler_growth_interval
-                    ),
-                    "effective_batch_size": config.effective_batch_size,
-                },
-            }
+            metadata = checkpoint_metadata()
             state = {
                 "epoch": epoch,
                 "best_epoch": best_epoch,
@@ -470,19 +523,31 @@ def predict_dataset(
             output = model(batch)
         predicted = output["predicted_rv"].cpu().numpy()
         predicted_log = output["predicted_log_rv"].cpu().numpy()
+        anchor_log = (
+            output["har_anchor_log_rv"].cpu().numpy()
+            if "har_anchor_log_rv" in output
+            else None
+        )
+        delta_log = (
+            output["delta_log_rv"].cpu().numpy()
+            if "har_anchor_log_rv" in output
+            else None
+        )
         true = batch["true_rv"].cpu().numpy()
         true_log = batch["true_log_rv"].cpu().numpy()
         ensure_finite("test predictions", predicted)
         for index, date in enumerate(raw_batch["target_date"]):
-            rows.append(
-                {
-                    "target_date": date,
-                    "true_rv": float(true[index]),
-                    "true_log_rv": float(true_log[index]),
-                    "predicted_rv": float(predicted[index]),
-                    "predicted_log_rv": float(predicted_log[index]),
-                }
-            )
+            row = {
+                "target_date": date,
+                "true_rv": float(true[index]),
+                "true_log_rv": float(true_log[index]),
+                "predicted_rv": float(predicted[index]),
+                "predicted_log_rv": float(predicted_log[index]),
+            }
+            if anchor_log is not None and delta_log is not None:
+                row["har_anchor_log_rv"] = float(anchor_log[index])
+                row["delta_log_rv"] = float(delta_log[index])
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
