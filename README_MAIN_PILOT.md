@@ -291,6 +291,8 @@ PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
   --news data/news_clusters.json \
   --output-dir outputs/event_aware_longtext_audit \
   --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
   --resume
 ```
 

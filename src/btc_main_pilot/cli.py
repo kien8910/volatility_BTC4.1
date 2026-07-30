@@ -350,6 +350,8 @@ def main(argv: list[str] | None = None) -> int:
             logger,
             review_audit_dir=Path(args.review_audit_dir),
             resume=args.resume,
+            silver_path=Path(args.silver_holdout_path),
+            longtext_cache_path=Path(args.longtext_cache),
         )
     elif args.profile == "development-point-in-time-gate-diagnostic":
         run_development_point_in_time_gate_diagnostic(

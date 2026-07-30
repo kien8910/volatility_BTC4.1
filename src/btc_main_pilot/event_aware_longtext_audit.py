@@ -856,6 +856,22 @@ def _screen(
     pooled_metrics: pd.DataFrame,
     min_delta: float,
 ) -> dict[str, Any]:
+    def finite(value: Any) -> bool:
+        return value is not None and bool(np.isfinite(value))
+
+    def better(candidate: Any, anchor: Any) -> bool:
+        return finite(candidate) and finite(anchor) and candidate < anchor - min_delta
+
+    def not_worse(candidate: Any, anchor: Any) -> bool:
+        if not finite(anchor):
+            return not finite(candidate)
+        return finite(candidate) and candidate <= anchor + min_delta
+
+    def delta(candidate: Any, anchor: Any) -> float | None:
+        if not (finite(candidate) and finite(anchor)):
+            return None
+        return float(candidate - anchor)
+
     anchor_fold = fold_metrics[
         fold_metrics["model"] == "har_qlike"
     ].set_index("fold")
@@ -869,53 +885,58 @@ def _screen(
         ].set_index("fold")
         pooled = pooled_metrics[pooled_metrics["model"] == name].iloc[0]
         overall_wins = sum(
-            candidate_fold.loc[fold, "mean_qlike"]
-            < anchor_fold.loc[fold, "mean_qlike"] - min_delta
+            better(
+                candidate_fold.loc[fold, "mean_qlike"],
+                anchor_fold.loc[fold, "mean_qlike"],
+            )
             for fold in anchor_fold.index
         )
         normal_wins = sum(
-            candidate_fold.loc[fold, "normal_qlike"]
-            < anchor_fold.loc[fold, "normal_qlike"] - min_delta
+            better(
+                candidate_fold.loc[fold, "normal_qlike"],
+                anchor_fold.loc[fold, "normal_qlike"],
+            )
             for fold in anchor_fold.index
         )
         spike_wins = sum(
-            candidate_fold.loc[fold, "spike_qlike"]
-            < anchor_fold.loc[fold, "spike_qlike"] - min_delta
+            better(
+                candidate_fold.loc[fold, "spike_qlike"],
+                anchor_fold.loc[fold, "spike_qlike"],
+            )
             for fold in anchor_fold.index
         )
         overall_screen = bool(
             overall_wins >= 3
-            and pooled["mean_qlike"]
-            < anchor_pooled["mean_qlike"] - min_delta
+            and better(pooled["mean_qlike"], anchor_pooled["mean_qlike"])
         )
         normal_screen = bool(
             name == "finbert_slow_fast_6"
             and normal_wins >= 3
-            and pooled["normal_qlike"]
-            < anchor_pooled["normal_qlike"] - min_delta
-            and pooled["mean_qlike"]
-            <= anchor_pooled["mean_qlike"] + min_delta
+            and better(pooled["normal_qlike"], anchor_pooled["normal_qlike"])
+            and not_worse(
+                pooled["mean_qlike"], anchor_pooled["mean_qlike"]
+            )
         )
         spike_screen = bool(
             name == "surprise_norms_2"
             and spike_wins >= 3
-            and pooled["spike_qlike"]
-            < anchor_pooled["spike_qlike"] - min_delta
-            and pooled["mean_qlike"]
-            <= anchor_pooled["mean_qlike"] + min_delta
+            and better(pooled["spike_qlike"], anchor_pooled["spike_qlike"])
+            and not_worse(
+                pooled["mean_qlike"], anchor_pooled["mean_qlike"]
+            )
         )
         candidates[name] = {
             "overall_fold_wins": int(overall_wins),
             "normal_fold_wins": int(normal_wins),
             "spike_fold_wins": int(spike_wins),
-            "pooled_overall_delta": float(
-                pooled["mean_qlike"] - anchor_pooled["mean_qlike"]
+            "pooled_overall_delta": delta(
+                pooled["mean_qlike"], anchor_pooled["mean_qlike"]
             ),
-            "pooled_normal_delta": float(
-                pooled["normal_qlike"] - anchor_pooled["normal_qlike"]
+            "pooled_normal_delta": delta(
+                pooled["normal_qlike"], anchor_pooled["normal_qlike"]
             ),
-            "pooled_spike_delta": float(
-                pooled["spike_qlike"] - anchor_pooled["spike_qlike"]
+            "pooled_spike_delta": delta(
+                pooled["spike_qlike"], anchor_pooled["spike_qlike"]
             ),
             "passes_overall_screen": overall_screen,
             "passes_normal_screen": normal_screen,
@@ -1204,6 +1225,8 @@ def run_development_event_aware_longtext_audit(
     logger: logging.Logger,
     review_audit_dir: Path,
     resume: bool,
+    silver_path: Path | None = None,
+    longtext_cache_path: Path | None = None,
 ) -> dict[str, Any]:
     config.validate()
     if config.profile != PROFILE:
@@ -1215,7 +1238,11 @@ def run_development_event_aware_longtext_audit(
     original = (
         review_audit_dir / "stratified_news_filter_review_original_366.csv"
     )
-    silver = output_dir / "audit" / "gpt_silver_holdout_366.csv"
+    silver = (
+        silver_path
+        if silver_path is not None
+        else output_dir / "audit" / "gpt_silver_holdout_366.csv"
+    )
     for required in (expanded, original, silver):
         if not required.exists():
             raise RuntimeError(
@@ -1281,6 +1308,7 @@ def run_development_event_aware_longtext_audit(
         logger,
         smoke=False,
         end=config.development_end,
+        cache_path=longtext_cache_path,
     )
     write_json(output_dir / "audit" / "embedding_audit.json", embedding_audit)
     logger.info("LONGTEXT STEP 4/4 | Run Fold 1-4 HAR-anchored probes")

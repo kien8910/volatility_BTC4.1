@@ -6,7 +6,9 @@ import pandas as pd
 from btc_main_pilot.event_aware_longtext_audit import (
     CONTEXT_FAMILIES,
     EventAwarePolicy,
+    REPRESENTATION_NAMES,
     VariantVectorCache,
+    _screen,
     _token_budgeted_text,
     _weighted_binary_metrics,
     event_aware_decision,
@@ -138,3 +140,33 @@ def test_deterministic_encoder_split_methods_match_combined():
     semantic, sentiment = encoder.encode(texts)
     np.testing.assert_array_equal(semantic, encoder.encode_semantic(texts))
     np.testing.assert_array_equal(sentiment, encoder.encode_sentiment(texts))
+
+
+def test_representation_screen_handles_a_smoke_block_without_spike_days():
+    rows = [
+        {
+            "fold": "smoke_fold",
+            "model": "har_qlike",
+            "mean_qlike": 0.2,
+            "normal_qlike": 0.2,
+            "spike_qlike": None,
+        }
+    ]
+    rows.extend(
+        {
+            "fold": "smoke_fold",
+            "model": name,
+            "mean_qlike": 0.19,
+            "normal_qlike": 0.19,
+            "spike_qlike": None,
+        }
+        for name in REPRESENTATION_NAMES
+    )
+    fold_metrics = pd.DataFrame(rows)
+    pooled_metrics = fold_metrics.drop(columns="fold")
+    screen = _screen(fold_metrics, pooled_metrics, min_delta=1e-5)
+    assert set(screen["candidates"]) == set(REPRESENTATION_NAMES)
+    assert all(
+        candidate["pooled_spike_delta"] is None
+        for candidate in screen["candidates"].values()
+    )
