@@ -581,7 +581,10 @@ def _prepare_update_daily(
     ensure_finite("scaled slow update tokens", update_scaled)
     ensure_finite("scaled slow level tokens", level_scaled)
     update_names = [
-        *[f"delta_semantic_slow_pc_{i:02d}" for i in range(1, 9)],
+        *[
+            f"delta_semantic_slow_pc_{i:02d}"
+            for i in range(1, news.semantic_slow.shape[1] + 1)
+        ],
         *[
             f"delta_sentiment_slow_{label}"
             for label in ("positive", "negative", "neutral")
@@ -590,7 +593,10 @@ def _prepare_update_daily(
         *auxiliary_columns,
     ]
     level_names = [
-        *[f"semantic_slow_pc_{i:02d}" for i in range(1, 9)],
+        *[
+            f"semantic_slow_pc_{i:02d}"
+            for i in range(1, news.semantic_slow.shape[1] + 1)
+        ],
         *[
             f"sentiment_slow_{label}"
             for label in ("positive", "negative", "neutral")
@@ -877,6 +883,28 @@ def _safe_pooled_metrics(
     return metrics
 
 
+def _assert_epoch_zero_har(
+    model: nn.Module,
+    batch: dict[str, Any],
+    variant: str,
+    seed: int,
+) -> None:
+    """Check the zero correction without perturbing the training RNG stream."""
+    was_training = model.training
+    try:
+        model.eval()
+        with torch.no_grad():
+            initial = model(batch)
+    finally:
+        model.train(was_training)
+    if not torch.equal(
+        initial["predicted_log_rv"].cpu(),
+        initial["har_anchor_log_rv"].cpu(),
+    ):
+        raise AssertionError(f"{variant} is not exactly HAR at epoch zero")
+    seed_everything(seed)
+
+
 def _screen(
     fold_metrics: pd.DataFrame,
     pooled_metrics: pd.DataFrame,
@@ -1015,6 +1043,9 @@ def _run_folds(
     resume: bool,
     lambda_grid: tuple[float, ...] = LAMBDA_SUM_GRID,
     smoke: bool = False,
+    selection_mode: Literal[
+        "development_screen", "single_fold_evaluation"
+    ] = "development_screen",
 ) -> dict[str, Any]:
     predictions_dir = output_dir / "predictions"
     metrics_dir = output_dir / "metrics"
@@ -1301,13 +1332,12 @@ def _run_folds(
                 )
                 for key, value in first.items()
             }
-            with torch.no_grad():
-                initial = model(batch)
-            if not torch.equal(
-                initial["predicted_log_rv"].cpu(),
-                initial["har_anchor_log_rv"].cpu(),
-            ):
-                raise AssertionError(f"{name} is not exactly HAR at epoch zero")
+            _assert_epoch_zero_har(
+                model,
+                batch,
+                name,
+                config.seed,
+            )
             run_name = f"{fold.name}_{name}_seed_{config.seed}"
             training = train_model(
                 model,
@@ -1480,7 +1510,24 @@ def _run_folds(
         pooled_rows.append(_safe_pooled_metrics(pooled_frame, name))
     pooled_metrics = pd.DataFrame(pooled_rows)
     pooled_metrics.to_csv(metrics_dir / "pooled_metrics.csv", index=False)
-    selection = _screen(fold_metrics, pooled_metrics, config.min_delta)
+    if selection_mode == "development_screen":
+        selection = _screen(
+            fold_metrics, pooled_metrics, config.min_delta
+        )
+    elif selection_mode == "single_fold_evaluation":
+        selection = {
+            "rule": (
+                "No model or PCA selection is permitted on Fold 5. "
+                "Configuration was frozen before OOS prediction."
+            ),
+            "folds_compared": int(fold_metrics["fold"].nunique()),
+            "primary_model": "slow_calendar_control",
+            "statistical_claim": (
+                "None; single-fold temporal generalization diagnostic."
+            ),
+        }
+    else:
+        raise ValueError(f"Unknown selection mode: {selection_mode}")
     influence = _influence_sensitivity(pooled)
     pd.DataFrame(influence).to_csv(
         metrics_dir / "top_spike_influence_sensitivity.csv", index=False

@@ -507,7 +507,10 @@ def _token_daily_matrix(
         ]
     ).astype(np.float64)
     names = [
-        *[f"bge_{state}_pc_{i:02d}" for i in range(1, 9)],
+        *[
+            f"bge_{state}_pc_{i:02d}"
+            for i in range(1, semantic.shape[1] + 1)
+        ],
         *[
             f"finbert_{state}_{label}"
             for label in ("positive", "negative", "neutral")

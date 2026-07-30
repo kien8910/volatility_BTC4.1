@@ -760,7 +760,7 @@ def _fold_feature(
         fold.validation_end,
         fold.test_start,
         fold.test_end,
-        replace(config, pca_dim=8),
+        config,
         logger,
     )
 

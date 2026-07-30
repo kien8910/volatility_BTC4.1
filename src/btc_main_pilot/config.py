@@ -173,6 +173,7 @@ class MainPilotConfig:
             "development-tail-regime-diagnostic",
             "development-vector-integration-diagnostic",
             "development-slow-transformer-v2-diagnostic",
+            "slow-transformer-fold5-evaluation",
         }
         assert self.seed == 11
         assert self.pca_dim == 8

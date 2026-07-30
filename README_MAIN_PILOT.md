@@ -570,3 +570,52 @@ training histories, blend grids, directional-prototype audits, fold/pooled
 metrics, top-spike influence sensitivity, and
 `metrics/diagnostic_report.json`. Fold 5/final test, realized-spike routing,
 MCS, five seeds, PCA16, combined PCA, and post-validation refit are excluded.
+
+## Fold 5 slow-Transformer PCA8/PCA16 evaluation
+
+This separate profile evaluates the frozen slow-Transformer candidate set on
+Fold 5:
+
+- core: 2018-01-01 through 2023-07-21;
+- validation: 2023-07-22 through 2023-10-19;
+- OOS: 2023-10-20 through 2024-04-16.
+
+PCA8 with `slow_calendar_control` is the primary configuration selected from
+Fold 1-4. PCA16 is run automatically as an exploratory sensitivity branch.
+The uninterrupted pipeline uses validation only for checkpoints, Gamma
+penalties, and blend alpha; it does not select a model or PCA dimension using
+Fold 5 OOS outcomes. Fold 5 was already opened by the original main-pilot, so
+this profile is a temporal-generalization diagnostic rather than a pristine
+confirmatory test.
+
+CPU smoke:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile slow-transformer-fold5-evaluation \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/slow_transformer_fold5_evaluation \
+  --smoke \
+  --no-resume
+```
+
+Full CUDA run:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile slow-transformer-fold5-evaluation \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/slow_transformer_fold5_evaluation \
+  --embedding-cache outputs/main_pilot/cache/article_embeddings.sqlite \
+  --scheduler-path outputs/main_pilot/scheduler_horizon.json \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+PCA-specific checkpoints, predictions, and metrics are stored under `pca8/`
+and `pca16/`. The combined comparison is written to
+`metrics/pca_comparison.csv` and `metrics/fold5_pca_report.json`.
