@@ -471,3 +471,47 @@ The main artifacts are:
 The profile never opens Fold 5, final test, the COVID fold, or MCS; it does
 not run PatchTST, chunk embeddings, PCA16, five seeds, or post-selection
 refitting.
+
+## Vector integration and Transformer cross-attention diagnostic
+
+This separate development-only profile compares the core-only HAR-QLIKE
+anchor with `finbert_normal`, `finbert_bge_directional`,
+`finbert_event_prototypes`, `transformer_cross_attention_slow`, and
+`transformer_cross_attention_fast`. Event prototypes are fitted independently
+inside each fold core. Both Transformer branches use the same 30-day tokens,
+market query, event features, pre-LN self-attention and pre-LN multi-head
+cross-attention; only the selected BGE/FinBERT state (`slow` or `fast`) differs.
+Their zero-initialized correction head makes epoch 0 exactly HAR.
+
+CPU smoke:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-vector-integration-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/vector_integration_diagnostic \
+  --smoke \
+  --no-resume
+```
+
+Full Fold 1-4 run on CUDA:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-vector-integration-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/vector_integration_diagnostic \
+  --scheduler-path outputs/main_pilot/scheduler_horizon.json \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+Results are written to `outputs/vector_integration_diagnostic`, including
+per-fold validation/OOS predictions, checkpoints and training histories,
+prototype metadata, fold/pooled metrics, the development screen, and
+`metrics/diagnostic_report.json`. Fold 5/final test, COVID, MCS, PCA16,
+combined PCA, five seeds, and post-validation refit remain excluded.
