@@ -166,6 +166,7 @@ class MainPilotConfig:
             "main-pilot",
             "development-spike-diagnostic",
             "development-regime-anchor-diagnostic",
+            "development-news-representation-audit",
         }
         assert self.seed == 11
         assert self.pca_dim == 8

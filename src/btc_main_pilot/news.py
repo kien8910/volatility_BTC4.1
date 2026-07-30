@@ -7,6 +7,7 @@ import math
 import re
 import sqlite3
 import time
+import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,6 +156,55 @@ def relevance_score(title: str, cleaned_text: str) -> tuple[bool, int]:
     return bool(keep_rule and score >= 2), score
 
 
+def relevance_evidence(title: str, cleaned_text: str) -> str:
+    lead = cleaned_text[:2000]
+    if any(pattern.search(title) for pattern in PRIMARY_PATTERNS):
+        return "title_primary"
+    if any(pattern.search(title) for pattern in SPECIFIC_PATTERNS):
+        return "title_specific"
+    if any(pattern.search(lead) for pattern in SPECIFIC_PATTERNS):
+        return "content_specific"
+    if sum(len(pattern.findall(lead)) for pattern in PRIMARY_PATTERNS) >= 2:
+        return "content_repeated"
+    if any(pattern.search(lead) for pattern in PRIMARY_PATTERNS):
+        return "content_single"
+    return "no_bitcoin_evidence"
+
+
+def _review_score_band(score: int) -> str:
+    if score < 2:
+        return "below_threshold"
+    if score == 2:
+        return "threshold_2"
+    if score == 3:
+        return "score_3"
+    return "score_4_plus"
+
+
+def _add_stratified_review_candidate(
+    buckets: dict[tuple[str, int, str, str], list[tuple[str, dict[str, Any]]]],
+    record: dict[str, Any],
+    per_cell: int,
+) -> None:
+    key = (
+        str(record["decision"]),
+        int(record["year"]),
+        str(record["evidence_type"]),
+        str(record["score_band"]),
+    )
+    rank = stable_hash(
+        {
+            "cluster": record["news_cluster_id"],
+            "timestamp": record["canonical_publication_time"],
+            "decision": record["decision"],
+        }
+    )
+    values = buckets.setdefault(key, [])
+    values.append((rank, record))
+    values.sort(key=lambda item: item[0])
+    del values[per_cell:]
+
+
 def iter_json_array(path: Path, chunk_size: int = 1 << 20) -> Iterator[dict[str, Any]]:
     """Stream a top-level JSON array without loading the 541 MB file."""
     decoder = json.JSONDecoder()
@@ -210,6 +260,7 @@ def load_filtered_articles(
     end: str,
     logger: logging.Logger,
     smoke_early_stop: bool = False,
+    stratified_review_per_cell: int = 0,
 ) -> tuple[list[FilteredArticle], dict[str, Any]]:
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)
@@ -226,6 +277,9 @@ def load_filtered_articles(
     strange_timestamps: list[dict[str, str]] = []
     retained_examples: list[dict[str, Any]] = []
     rejected_examples: list[dict[str, Any]] = []
+    review_buckets: dict[
+        tuple[str, int, str, str], list[tuple[str, dict[str, Any]]]
+    ] = {}
     last_report = time.monotonic()
     for raw in iter_json_array(path):
         counts["records_scanned"] += 1
@@ -257,6 +311,27 @@ def load_filtered_articles(
         title = clean_article_text(raw.get("canonical_title", ""))
         cleaned = clean_article_text(raw.get("canonical_article_text", ""))
         keep, score = relevance_score(title, cleaned)
+        evidence = relevance_evidence(title, cleaned)
+        decision = "retained" if keep else "removed"
+        if stratified_review_per_cell > 0:
+            _add_stratified_review_candidate(
+                review_buckets,
+                {
+                    "news_cluster_id": str(raw.get("news_cluster_id", "")),
+                    "canonical_publication_time": str(timestamp),
+                    "year": int(timestamp.year),
+                    "canonical_source": clean_article_text(
+                        raw.get("canonical_source", "")
+                    ),
+                    "canonical_title": title,
+                    "cleaned_lead": cleaned[:500],
+                    "decision": decision,
+                    "relevance_score": score,
+                    "score_band": _review_score_band(score),
+                    "evidence_type": evidence,
+                },
+                stratified_review_per_cell,
+            )
         if not keep:
             counts["filtered_irrelevant"] += 1
             if len(rejected_examples) < 100:
@@ -317,6 +392,12 @@ def load_filtered_articles(
         "strange_timestamp_count": len(strange_timestamps),
         "strange_timestamp_examples": strange_timestamps[:100],
         "manual_review_examples": retained_examples + rejected_examples,
+        "stratified_review_examples": [
+            record
+            for key in sorted(review_buckets)
+            for _, record in review_buckets[key]
+        ],
+        "stratified_review_per_cell": stratified_review_per_cell,
     }
     logger.info(
         "NEWS FILTER DONE | kept=%d removed=%d outside=%d invalid_time=%d",
@@ -326,6 +407,70 @@ def load_filtered_articles(
         counts["invalid_timestamp"],
     )
     return retained, audit
+
+
+def normalize_duplicate_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", " ", ascii_text.lower()).strip()
+
+
+def conservative_deduplicate_articles(
+    articles: list[FilteredArticle],
+) -> tuple[list[int], dict[str, Any]]:
+    """Remove only same-timestamp title twins or exact same-day cleaned content."""
+    kept_indices: list[int] = []
+    seen_titles: set[tuple[str, str]] = set()
+    seen_content: set[tuple[str, str]] = set()
+    removed_title = 0
+    removed_content = 0
+    duplicate_examples: list[dict[str, Any]] = []
+    for index, article in enumerate(articles):
+        title_key = (
+            article.timestamp.isoformat(),
+            normalize_duplicate_text(article.title),
+        )
+        normalized_content = normalize_duplicate_text(article.cleaned_text)
+        content_key = (
+            article.timestamp.strftime("%Y-%m-%d"),
+            stable_hash(normalized_content),
+        )
+        reason = None
+        if title_key[1] and title_key in seen_titles:
+            reason = "same_timestamp_normalized_title"
+            removed_title += 1
+        elif normalized_content and content_key in seen_content:
+            reason = "same_day_exact_cleaned_content"
+            removed_content += 1
+        if reason is not None:
+            if len(duplicate_examples) < 100:
+                duplicate_examples.append(
+                    {
+                        "news_cluster_id": article.cluster_id,
+                        "canonical_publication_time": article.timestamp.isoformat(),
+                        "canonical_source": article.source,
+                        "canonical_title": article.title,
+                        "reason": reason,
+                    }
+                )
+            continue
+        kept_indices.append(index)
+        seen_titles.add(title_key)
+        if normalized_content:
+            seen_content.add(content_key)
+    return kept_indices, {
+        "input_articles": len(articles),
+        "retained_articles": len(kept_indices),
+        "removed_articles": len(articles) - len(kept_indices),
+        "removed_same_timestamp_normalized_title": removed_title,
+        "removed_same_day_exact_cleaned_content": removed_content,
+        "rule": (
+            "Keep first chronologically encountered cluster; remove only an "
+            "identical normalized title at the exact timestamp or identical "
+            "normalized cleaned content within the same UTC day."
+        ),
+        "examples": duplicate_examples,
+    }
 
 
 class EmbeddingCache:
@@ -572,6 +717,7 @@ def aggregate_daily_news(
     sentiments: np.ndarray,
     start: str,
     end: str,
+    source_balanced: bool = False,
 ) -> pd.DataFrame:
     index = pd.date_range(start, end, freq="D", tz="UTC")
     frame = pd.DataFrame(index=index)
@@ -588,10 +734,24 @@ def aggregate_daily_news(
     for day, indices in grouped.items():
         if day not in frame.index:
             continue
-        weights = np.asarray(
+        relevance = np.asarray(
             [articles[index].relevance for index in indices], dtype=np.float64
         )
-        weights /= weights.sum()
+        if source_balanced:
+            sources: dict[str, list[int]] = {}
+            for local_index, article_index in enumerate(indices):
+                source = articles[article_index].source or "__unknown_source__"
+                sources.setdefault(source, []).append(local_index)
+            weights = np.zeros(len(indices), dtype=np.float64)
+            for local_indices in sources.values():
+                local_relevance = relevance[local_indices]
+                weights[local_indices] = (
+                    local_relevance
+                    / local_relevance.sum()
+                    / len(sources)
+                )
+        else:
+            weights = relevance / relevance.sum()
         day_semantics = semantics[indices].astype(np.float64)
         day_sentiments = sentiments[indices].astype(np.float64)
         centroid = np.sum(day_semantics * weights[:, None], axis=0)
@@ -611,7 +771,11 @@ def aggregate_daily_news(
         frame.at[day, "no_news_dummy"] = 0.0
         frame.at[day, "semantic"] = centroid.astype(np.float32)
         frame.at[day, "sentiment"] = sentiment.astype(np.float32)
-        frame.at[day, "negative_ratio"] = float(np.mean(labels == 1))
+        frame.at[day, "negative_ratio"] = float(
+            np.sum(weights * (labels == 1))
+            if source_balanced
+            else np.mean(labels == 1)
+        )
         frame.at[day, "negative_count_070"] = int(
             np.sum(day_sentiments[:, 1] > 0.70)
         )
@@ -619,7 +783,18 @@ def aggregate_daily_news(
             np.max(day_sentiments[:, 1])
         )
         frame.at[day, "negative_probability_std"] = float(
-            np.std(day_sentiments[:, 1], ddof=0)
+            np.sqrt(
+                np.sum(
+                    weights
+                    * (
+                        day_sentiments[:, 1]
+                        - np.sum(weights * day_sentiments[:, 1])
+                    )
+                    ** 2
+                )
+            )
+            if source_balanced
+            else np.std(day_sentiments[:, 1], ddof=0)
         )
         frame.at[day, "positive_probability_max"] = float(
             np.max(day_sentiments[:, 0])
@@ -629,7 +804,9 @@ def aggregate_daily_news(
             np.sum((1.0 - np.clip(cosine, -1.0, 1.0)) * weights)
         )
         frame.at[day, "mean_relevance"] = float(
-            np.mean([articles[index].relevance for index in indices])
+            np.sum(weights * relevance)
+            if source_balanced
+            else np.mean(relevance)
         )
     log_count = np.log1p(frame["news_count"].astype(float))
     rolling = log_count.rolling(window=365, min_periods=30).median()

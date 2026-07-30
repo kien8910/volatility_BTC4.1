@@ -6,6 +6,11 @@ from pathlib import Path
 
 from .config import MainPilotConfig
 from .pipeline import run_main_pilot, run_review_only, run_smoke
+from .news_representation_audit import (
+    run_development_news_representation_audit,
+    run_news_representation_review,
+    run_news_representation_smoke,
+)
 from .regime_anchor_diagnostic import (
     run_development_regime_anchor_diagnostic,
     run_regime_anchor_smoke,
@@ -31,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
             "main-pilot",
             "development-spike-diagnostic",
             "development-regime-anchor-diagnostic",
+            "development-news-representation-audit",
         ],
         default="main-pilot",
         help="Development diagnostics run Fold 1-4 only and never open final test.",
@@ -94,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
         "development-regime-anchor-diagnostic": (
             "outputs/regime_anchor_diagnostic"
         ),
+        "development-news-representation-audit": (
+            "outputs/news_representation_audit"
+        ),
     }
     output_dir = args.output_dir or default_outputs[args.profile]
     embedding_cache = args.embedding_cache
@@ -114,7 +123,11 @@ def main(argv: list[str] | None = None) -> int:
     config.validate()
     logger = setup_logging(Path(output_dir))
     if args.review_news_only:
-        review_path = run_review_only(config, logger)
+        review_path = (
+            run_news_representation_review(config, logger)
+            if args.profile == "development-news-representation-audit"
+            else run_review_only(config, logger)
+        )
         logger.info("REVIEW SAMPLE READY | %s", review_path)
         return 0
     if args.smoke:
@@ -126,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
             report = run_regime_anchor_smoke(
                 config, logger, resume=args.resume
             )
+        elif args.profile == "development-news-representation-audit":
+            report = run_news_representation_smoke(config, logger)
         else:
             report = run_smoke(config, logger, resume=args.resume)
         logger.info(
@@ -149,6 +164,13 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             confirm_news_filter_reviewed=args.confirm_news_filter_reviewed,
             scheduler_path=Path(args.scheduler_path),
+        )
+    elif args.profile == "development-news-representation-audit":
+        run_development_news_representation_audit(
+            config,
+            logger,
+            resume=args.resume,
+            confirm_news_filter_reviewed=args.confirm_news_filter_reviewed,
         )
     else:
         run_main_pilot(

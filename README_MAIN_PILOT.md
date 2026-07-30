@@ -150,3 +150,69 @@ The report is written to
 `outputs/regime_anchor_diagnostic/metrics/diagnostic_report.json`. Per-run
 validation and development-OOS predictions include both the HAR anchor and
 the learned log-RV correction. Fold 5 and the final test remain unopened.
+
+## Development-only news representation audit
+
+This profile audits the news input before any spike gate is introduced. It
+creates a deterministic stratified filter-review sample, measures conservative
+same-time/title and same-day/content duplicates, yearly source concentration,
+and BGE tokenizer truncation. It then runs HAR-QLIKE-anchored linear probes on
+rolling Fold 1-4 for eight predeclared representations:
+
+- current 11 daily news scalars;
+- FinBERT slow/fast probabilities;
+- BGE slow/fast with core-only PCA8 or PCA16;
+- semantic/sentiment surprise norms;
+- current combined PCA8;
+- conservative deduplication plus source-balanced PCA8;
+- combined PCA16 plus surprise norms.
+
+Every probe standardizes features on its fold core only. The locked
+`lambda_sum` grid is selected by validation exact QLIKE, with the larger
+penalty preferred inside `1e-5`. A correction is applied to development OOS
+only if it improves validation over the core-only HAR-QLIKE anchor by at least
+`1e-5`. This profile does not train a Transformer, add spike gating, open Fold
+5/final test, or make a statistical claim.
+
+First export and inspect the new stratified review:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-news-representation-audit \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/news_representation_audit \
+  --review-news-only
+```
+
+Run the CPU-safe smoke test:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-news-representation-audit \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/news_representation_audit \
+  --smoke \
+  --no-resume
+```
+
+After reviewing
+`outputs/news_representation_audit/audit/stratified_news_filter_review.csv`,
+run the full development audit on CUDA:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-news-representation-audit \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/news_representation_audit \
+  --embedding-cache outputs/main_pilot/cache/article_embeddings.sqlite \
+  --confirm-news-filter-reviewed \
+  --resume
+```
+
+The final screen is written to
+`outputs/news_representation_audit/metrics/representation_screen.json`, with
+the complete report at
+`outputs/news_representation_audit/metrics/diagnostic_report.json`.
