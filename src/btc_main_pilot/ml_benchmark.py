@@ -210,6 +210,12 @@ def _verify_frozen_protocol(
     report = json.loads(development_report.read_text(encoding="utf-8"))
     if report.get("status") != "completed":
         raise RuntimeError("Development benchmark is not completed")
+    if report.get("primary_model_main_table_eligible") is not True:
+        raise RuntimeError(
+            "Final holdout is blocked because the frozen primary model did "
+            "not complete every development fold for all five primary seeds. "
+            "Inspect numerical_failures and resume development first."
+        )
     return frozen
 
 
@@ -224,6 +230,35 @@ def _seed_ensemble(
     for model in CANDIDATES:
         per_seed: list[pd.DataFrame] = []
         for seed in seeds:
+            completion_path = (
+                phase_dir
+                / f"seed_{seed}"
+                / "metrics"
+                / "model_completion.json"
+            )
+            if not completion_path.exists():
+                seed_diagnostics.append(
+                    {
+                        "model": model,
+                        "seed": seed,
+                        "status": "missing_model_completion_audit",
+                        "path": str(completion_path),
+                    }
+                )
+                continue
+            completion = json.loads(
+                completion_path.read_text(encoding="utf-8")
+            ).get(model, {})
+            if not completion.get("eligible_for_seed_ensemble", False):
+                seed_diagnostics.append(
+                    {
+                        "model": model,
+                        "seed": seed,
+                        "status": "ineligible_incomplete_folds",
+                        **completion,
+                    }
+                )
+                continue
             path = (
                 phase_dir
                 / f"seed_{seed}"
@@ -301,6 +336,8 @@ def _development_seed_summary(
             for row in result["pooled_metrics"]
         ]
     )
+    if "eligible_for_seed_ensemble" in frame.columns:
+        frame = frame[frame["eligible_for_seed_ensemble"].astype(bool)]
     rows: list[dict[str, Any]] = []
     for model, group in frame.groupby("model", sort=False):
         row: dict[str, Any] = {
@@ -545,6 +582,8 @@ def _run_econometric_and_common_support(
     return {
         "completed_models": sorted(completed_models),
         "missing_models": missing_models,
+        "main_table_eligible_models": sorted(completed_models),
+        "supplemental_or_failed_models": missing_models,
         "common_support_n": len(common_keys),
         "common_support_fold_count": int(
             all_fold_metrics["fold"].nunique()
@@ -754,6 +793,12 @@ def _run_phase(
         ensemble_frames,
     )
     exact_primary_seeds = seeds == PRIMARY_SEEDS
+    all_numerical_failures = [
+        failure
+        for result in seed_results.values()
+        for failure in result.get("numerical_failures", [])
+    ]
+    eligible_models = set(comparison["main_table_eligible_models"])
     report = {
         "status": "completed",
         "run_signature": signature,
@@ -765,6 +810,9 @@ def _run_phase(
             exact_primary_seeds
             and comparison["main_table_eligible_models_complete"]
         ),
+        "primary_model_main_table_eligible": bool(
+            exact_primary_seeds and PRIMARY_MODEL in eligible_models
+        ),
         "primary_model": PRIMARY_MODEL,
         "primary_pca_dim": PRIMARY_PCA_DIM,
         "scheduler_validation": scheduler_validation,
@@ -772,6 +820,8 @@ def _run_phase(
         "filter_audit": filter_audit,
         "embedding_audit": embedding_audit,
         "deep_seed_summary": seed_summary,
+        "numerical_failures": all_numerical_failures,
+        "numerical_failure_count": len(all_numerical_failures),
         "comparison": comparison,
         "interpretation": (
             "Development results are architecture-selection diagnostics."

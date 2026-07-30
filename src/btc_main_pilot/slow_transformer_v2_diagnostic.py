@@ -934,9 +934,21 @@ def _screen(
         ].set_index("fold")
         current_pool = pooled_metrics[
             pooled_metrics["model"] == name
-        ].iloc[0]
+        ]
+        if current_fold.empty or current_pool.empty:
+            candidates[name] = {
+                "folds_compared": 0,
+                "required_fold_wins": int(len(anchor_fold)),
+                "passes_predeclared_screen": False,
+                "ineligible_reason": (
+                    "missing finite OOS predictions after numerical failure"
+                ),
+            }
+            continue
+        current_pool = current_pool.iloc[0]
         common = sorted(set(anchor_fold.index) & set(current_fold.index))
         required_wins = min(3, len(common))
+        all_folds_complete = len(common) == len(anchor_fold)
 
         def wins(metric: str) -> int:
             return sum(
@@ -963,6 +975,7 @@ def _screen(
         candidates[name] = {
             "folds_compared": len(common),
             "required_fold_wins": required_wins,
+            "all_folds_complete": all_folds_complete,
             "overall_fold_wins": overall_wins,
             "normal_fold_wins": wins("normal_qlike"),
             "spike_fold_wins": spike_wins,
@@ -985,6 +998,7 @@ def _screen(
             "passes_predeclared_screen": bool(
                 overall_wins >= required_wins
                 and spike_wins >= required_wins
+                and all_folds_complete
                 and pooled_overall_better
                 and pooled_spike_better
                 and normal_guard
@@ -1007,18 +1021,29 @@ def _influence_sensitivity(
     pooled: dict[str, list[pd.DataFrame]],
 ) -> list[dict[str, Any]]:
     anchor = pd.concat(pooled["har_qlike"], ignore_index=True)
+    anchor["_key"] = (
+        anchor["fold"].astype(str) + "|" + anchor["target_date"].astype(str)
+    )
     rows = []
     for drop_n in (0, 1, 2, 3):
-        excluded = (
-            anchor.loc[anchor["is_spike"]]
-            .nlargest(drop_n, "qlike")
-            .index
+        excluded_keys = (
+            set(
+                anchor.loc[anchor["is_spike"]]
+                .nlargest(drop_n, "qlike")["_key"]
+            )
             if drop_n
-            else pd.Index([])
+            else set()
         )
-        keep = ~anchor.index.isin(excluded)
         for name, frames in pooled.items():
+            if not frames:
+                continue
             current = pd.concat(frames, ignore_index=True)
+            current_keys = (
+                current["fold"].astype(str)
+                + "|"
+                + current["target_date"].astype(str)
+            )
+            keep = ~current_keys.isin(excluded_keys)
             rows.append(
                 {
                     "model": name,
@@ -1069,6 +1094,7 @@ def _run_folds(
         name: [] for name in CANDIDATES
     }
     fold_metadata: dict[str, Any] = {}
+    numerical_failures: list[dict[str, Any]] = []
     for fold_index, fold in enumerate(folds, start=1):
         logger.info(
             "SLOW V2 FOLD %d/%d | %s build t-1 information set",
@@ -1387,10 +1413,41 @@ def _run_folds(
                 include_epoch_zero_checkpoint=True,
             )
             if training.numerical_failure:
-                raise FloatingPointError(
-                    f"{run_name} had a numerical failure and is ineligible "
-                    f"for prediction: {training.failure_reason}"
+                failure = {
+                    "fold": fold.name,
+                    "model": name,
+                    "seed": config.seed,
+                    "run_name": run_name,
+                    "failure_reason": training.failure_reason,
+                    "best_epoch_before_failure": training.best_epoch,
+                    "epochs_run": training.epochs_run,
+                    "best_validation_qlike_before_failure": (
+                        training.best_validation_qlike
+                    ),
+                    "amp_overflow_recoveries": (
+                        training.amp_overflow_recoveries
+                    ),
+                    "prediction_generated": False,
+                    "main_table_eligible": False,
+                }
+                numerical_failures.append(failure)
+                metadata["transformer"][name] = {
+                    **prep_meta,
+                    "parameter_count": count,
+                    **failure,
+                }
+                logger.error(
+                    "NUMERICAL RUN EXCLUDED | fold=%s model=%s seed=%d "
+                    "reason=%s | continuing benchmark",
+                    fold.name,
+                    name,
+                    config.seed,
+                    training.failure_reason,
                 )
+                del model
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                continue
             validation_frame = predict_dataset(
                 model,
                 validation_set,
@@ -1444,6 +1501,9 @@ def _run_folds(
                     "peak_gpu_memory_bytes": (
                         training.peak_gpu_memory_bytes
                     ),
+                    "amp_overflow_recoveries": (
+                        training.amp_overflow_recoveries
+                    ),
                 }
             )
             metadata["transformer"][name] = {
@@ -1453,6 +1513,9 @@ def _run_folds(
                 "epochs_run": training.epochs_run,
                 "early_stopped": training.early_stopped,
                 "best_validation_qlike": training.best_validation_qlike,
+                "amp_overflow_recoveries": (
+                    training.amp_overflow_recoveries
+                ),
                 "epoch_zero_exact_har": True,
                 "uses_update_mask": name not in {
                     "slow_calendar_control",
@@ -1491,50 +1554,78 @@ def _run_folds(
                     "test": test_frame,
                 }
 
-        blend_validation, blend_test, blend_meta, blend_grid = select_log_blend(
-            linear_frames["finbert_normal"]["validation"],
-            gated_frames["validation"],
-            linear_frames["finbert_normal"]["test"],
-            gated_frames["test"],
-            min_delta=config.min_delta,
-        )
         blend_name = "finbert_normal_slow_blend"
-        blend_validation.to_csv(
-            predictions_dir / f"{fold.name}_{blend_name}_validation.csv",
-            index=False,
-        )
-        blend_annotated = _annotate_predictions(
-            blend_test, fold.name, blend_name, spike_threshold
-        )
-        blend_annotated.to_csv(
-            predictions_dir / f"{fold.name}_{blend_name}.csv", index=False
-        )
-        blend_grid.to_csv(
-            metrics_dir / f"{fold.name}_{blend_name}_alpha_grid.csv",
-            index=False,
-        )
-        pooled[blend_name].append(blend_annotated)
-        fold_rows.append(
-            {
+        if gated_frames:
+            blend_validation, blend_test, blend_meta, blend_grid = (
+                select_log_blend(
+                    linear_frames["finbert_normal"]["validation"],
+                    gated_frames["validation"],
+                    linear_frames["finbert_normal"]["test"],
+                    gated_frames["test"],
+                    min_delta=config.min_delta,
+                )
+            )
+            blend_validation.to_csv(
+                predictions_dir
+                / f"{fold.name}_{blend_name}_validation.csv",
+                index=False,
+            )
+            blend_annotated = _annotate_predictions(
+                blend_test, fold.name, blend_name, spike_threshold
+            )
+            blend_annotated.to_csv(
+                predictions_dir / f"{fold.name}_{blend_name}.csv",
+                index=False,
+            )
+            blend_grid.to_csv(
+                metrics_dir / f"{fold.name}_{blend_name}_alpha_grid.csv",
+                index=False,
+            )
+            pooled[blend_name].append(blend_annotated)
+            fold_rows.append(
+                {
+                    "fold": fold.name,
+                    **_diagnostic_metrics(
+                        blend_annotated, spike_threshold, blend_name
+                    ),
+                    "best_epoch": None,
+                    "early_stopped": None,
+                    "best_validation_qlike": blend_meta[
+                        "validation_qlike"
+                    ],
+                    "correction_selected": bool(
+                        blend_meta["alpha_slow"] > 0
+                        or linear_frames["finbert_normal"]["validation"][
+                            "delta_log_rv"
+                        ]
+                        .abs()
+                        .max()
+                        > 0
+                    ),
+                }
+            )
+            metadata["blend"][blend_name] = blend_meta
+        else:
+            failure = {
                 "fold": fold.name,
-                **_diagnostic_metrics(
-                    blend_annotated, spike_threshold, blend_name
+                "model": blend_name,
+                "seed": config.seed,
+                "run_name": f"{fold.name}_{blend_name}_seed_{config.seed}",
+                "failure_reason": (
+                    "dependency slow_update_multiquery_gated has no eligible "
+                    "prediction"
                 ),
-                "best_epoch": None,
-                "early_stopped": None,
-                "best_validation_qlike": blend_meta["validation_qlike"],
-                "correction_selected": bool(
-                    blend_meta["alpha_slow"] > 0
-                    or linear_frames["finbert_normal"]["validation"][
-                        "delta_log_rv"
-                    ]
-                    .abs()
-                    .max()
-                    > 0
-                ),
+                "prediction_generated": False,
+                "main_table_eligible": False,
             }
-        )
-        metadata["blend"][blend_name] = blend_meta
+            numerical_failures.append(failure)
+            metadata["blend"][blend_name] = failure
+            logger.error(
+                "DEPENDENT RUN EXCLUDED | fold=%s model=%s seed=%d",
+                fold.name,
+                blend_name,
+                config.seed,
+            )
         fold_metadata[fold.name] = metadata
         write_json(
             features_dir / f"{fold.name}_metadata.json", metadata
@@ -1543,12 +1634,41 @@ def _run_folds(
     fold_metrics = pd.DataFrame(fold_rows)
     fold_metrics.to_csv(metrics_dir / "fold_metrics.csv", index=False)
     pooled_rows = []
+    expected_folds = {fold.name for fold in folds}
+    model_completion: dict[str, Any] = {}
     for name, frames in pooled.items():
+        completed_folds = (
+            sorted(
+                set(
+                    pd.concat(frames, ignore_index=True)["fold"].astype(str)
+                )
+            )
+            if frames
+            else []
+        )
+        eligible = set(completed_folds) == expected_folds
+        model_completion[name] = {
+            "expected_folds": sorted(expected_folds),
+            "completed_folds": completed_folds,
+            "eligible_for_seed_ensemble": eligible,
+            "missing_folds": sorted(expected_folds - set(completed_folds)),
+        }
+        if not frames:
+            continue
         pooled_frame = pd.concat(frames, ignore_index=True)
         pooled_frame.to_csv(
-            predictions_dir / f"pooled_{name}.csv", index=False
+            predictions_dir
+            / (
+                f"pooled_{name}.csv"
+                if eligible
+                else f"pooled_partial_{name}.csv"
+            ),
+            index=False,
         )
-        pooled_rows.append(_safe_pooled_metrics(pooled_frame, name))
+        row = _safe_pooled_metrics(pooled_frame, name)
+        row["eligible_for_seed_ensemble"] = eligible
+        row["completed_fold_count"] = len(completed_folds)
+        pooled_rows.append(row)
     pooled_metrics = pd.DataFrame(pooled_rows)
     pooled_metrics.to_csv(metrics_dir / "pooled_metrics.csv", index=False)
     if selection_mode == "development_screen":
@@ -1586,6 +1706,8 @@ def _run_folds(
         metrics_dir / "top_spike_influence_sensitivity.csv", index=False
     )
     write_json(metrics_dir / "selection_screen.json", selection)
+    write_json(metrics_dir / "model_completion.json", model_completion)
+    write_json(metrics_dir / "numerical_failures.json", numerical_failures)
     write_json(features_dir / "fold_metadata.json", fold_metadata)
     return {
         "fold_metrics": fold_rows,
@@ -1593,6 +1715,8 @@ def _run_folds(
         "selection": selection,
         "top_spike_influence_sensitivity": influence,
         "fold_metadata": fold_metadata,
+        "model_completion": model_completion,
+        "numerical_failures": numerical_failures,
     }
 
 

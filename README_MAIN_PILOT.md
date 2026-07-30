@@ -710,3 +710,13 @@ file is `metrics/all_model_metrics_common_support.csv`; it contains QLIKE,
 spike/normal QLIKE, RMSE/MAE/MSE/median absolute error on log-RV, R-squared,
 log-RV correlation, directional accuracy, bias, model ranks, and deltas
 against HAR-QLIKE.
+
+AMP overflow is handled through PyTorch GradScaler's standard recovery path:
+the affected optimizer/scheduler step is skipped, the scale is reduced, and
+the recovery count is logged and saved. A genuinely non-finite loss or an
+unrecoverable gradient error excludes only that model/fold/seed and is written
+to `metrics/numerical_failures.json`; the remaining benchmark continues.
+Models missing any requested fold/seed are supplemental-only and cannot enter
+the five-seed ensemble. With `--resume`, completed runs are reused without
+additional epochs, while a previously interrupted numerical run resumes from
+its last valid epoch checkpoint.

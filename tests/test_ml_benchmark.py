@@ -66,7 +66,10 @@ def test_frozen_protocol_detects_any_change(tmp_path):
     _freeze_protocol(tmp_path, payload)
     report = tmp_path / "development" / "metrics" / "benchmark_report.json"
     report.parent.mkdir(parents=True)
-    report.write_text('{"status":"completed"}', encoding="utf-8")
+    report.write_text(
+        '{"status":"completed","primary_model_main_table_eligible":true}',
+        encoding="utf-8",
+    )
     assert _verify_frozen_protocol(tmp_path, payload)["payload"] == payload
     with pytest.raises(RuntimeError, match="differs"):
         _verify_frozen_protocol(
@@ -78,6 +81,16 @@ def test_seed_ensemble_averages_variance_not_log_variance(tmp_path):
     for seed, predictions in ((11, [1.0, 4.0]), (22, [3.0, 8.0])):
         directory = tmp_path / f"seed_{seed}" / "predictions"
         directory.mkdir(parents=True)
+        metrics_directory = tmp_path / f"seed_{seed}" / "metrics"
+        metrics_directory.mkdir(parents=True)
+        (metrics_directory / "model_completion.json").write_text(
+            (
+                '{"har_qlike":{"eligible_for_seed_ensemble":true,'
+                '"expected_folds":["fold_1"],'
+                '"completed_folds":["fold_1"],"missing_folds":[]}}'
+            ),
+            encoding="utf-8",
+        )
         predicted = np.asarray(predictions, dtype=np.float64)
         true = np.asarray([2.0, 6.0], dtype=np.float64)
         pd.DataFrame(
@@ -102,6 +115,49 @@ def test_seed_ensemble_averages_variance_not_log_variance(tmp_path):
     np.testing.assert_allclose(
         frames["har_qlike"]["predicted_log_rv"], np.log([2.0, 6.0])
     )
+
+
+def test_seed_ensemble_excludes_incomplete_model_even_if_stale_file_exists(
+    tmp_path,
+):
+    directory = tmp_path / "seed_11" / "predictions"
+    directory.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "target_date": ["2020-01-01"],
+            "fold": ["fold_1"],
+            "true_rv": [1.0],
+            "true_log_rv": [0.0],
+            "predicted_rv": [1.0],
+            "predicted_log_rv": [0.0],
+            "spike_threshold": [2.0],
+            "is_spike": [False],
+            "predicted_spike": [False],
+            "qlike": [0.0],
+            "model": ["slow_calendar_control"],
+        }
+    ).to_csv(
+        directory / "pooled_slow_calendar_control.csv", index=False
+    )
+    metrics_directory = tmp_path / "seed_11" / "metrics"
+    metrics_directory.mkdir(parents=True)
+    (metrics_directory / "model_completion.json").write_text(
+        (
+            '{"slow_calendar_control":{'
+            '"eligible_for_seed_ensemble":false,'
+            '"expected_folds":["fold_1","fold_2"],'
+            '"completed_folds":["fold_1"],"missing_folds":["fold_2"]}}'
+        ),
+        encoding="utf-8",
+    )
+    frames, diagnostics = _seed_ensemble(tmp_path, (11,))
+    assert "slow_calendar_control" not in frames
+    status = next(
+        row["status"]
+        for row in diagnostics
+        if row["model"] == "slow_calendar_control"
+    )
+    assert status == "ineligible_incomplete_folds"
 
 
 def test_common_support_is_fold_and_date_intersection():

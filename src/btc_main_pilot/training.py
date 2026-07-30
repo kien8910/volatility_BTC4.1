@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
@@ -31,6 +32,39 @@ class TrainingResult:
     failure_reason: str | None
     training_seconds: float
     peak_gpu_memory_bytes: int
+    amp_overflow_recoveries: int
+
+
+def _recover_amp_overflow(
+    scaler: Any,
+    optimizer: torch.optim.Optimizer,
+) -> tuple[float, float]:
+    """Use GradScaler's found-inf state to skip the step and reduce scale."""
+    scale_before = float(scaler.get_scale())
+    scaler.step(optimizer)
+    scaler.update()
+    scale_after = float(scaler.get_scale())
+    optimizer.zero_grad(set_to_none=True)
+    if not scale_after < scale_before:
+        raise FloatingPointError(
+            "AMP found nonfinite gradients but did not reduce its scale"
+        )
+    return scale_before, scale_after
+
+
+def _reconstruct_loader_generator_state(
+    train_loader: DataLoader,
+    generator: torch.Generator,
+    completed_epochs: int,
+) -> None:
+    """Replay RNG consumption without loading samples for legacy checkpoints."""
+    if completed_epochs < 0:
+        raise ValueError("completed_epochs must be nonnegative")
+    for _ in range(completed_epochs):
+        # DataLoader iterator creation consumes one base-seed draw before its
+        # RandomSampler consumes the epoch permutation.
+        torch.empty((), dtype=torch.int64).random_(generator=generator)
+        list(iter(train_loader.sampler))
 
 
 def _optimizer(model: MainPatchTST, config: MainPilotConfig) -> AdamW:
@@ -182,9 +216,77 @@ def train_model(
     best_validation = float("inf")
     stale_epochs = 0
     history: list[dict[str, Any]] = []
+    amp_overflow_recoveries = 0
     last_path = checkpoint_dir / "last.pt"
     best_path = checkpoint_dir / "best.pt"
+    result_path = checkpoint_dir / "training_result.json"
+    metadata_path = checkpoint_dir / "checkpoint_metadata.json"
     resumed_checkpoint = False
+    if (
+        resume
+        and result_path.exists()
+        and metadata_path.exists()
+        and best_path.exists()
+    ):
+        completed = json.loads(result_path.read_text(encoding="utf-8"))
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        compatible = (
+            metadata.get("model_variant") == model.variant
+            and metadata.get("seed") == config.seed
+            and metadata.get("preprocessor_hash") == preprocessor_hash
+            and metadata.get("scheduler_hash") == scheduler_hash
+            and metadata.get("horizon_epochs") == horizon_epochs
+            and metadata.get("objective") == config.training_loss
+        )
+        if not compatible:
+            raise RuntimeError(
+                "Completed checkpoint metadata is incompatible with resume"
+            )
+        if completed.get("numerical_failure") is not True:
+            best_state = torch.load(
+                best_path, map_location=device, weights_only=False
+            )
+            model.load_state_dict(best_state["model"])
+            model.to(device)
+            completed_history = list(completed.get("history", []))
+            recoveries = int(
+                completed.get(
+                    "amp_overflow_recoveries",
+                    sum(
+                        int(
+                            row.get(
+                                "amp_overflow_recoveries_epoch",
+                                row.get("amp_overflow_recovered", False),
+                            )
+                        )
+                        for row in completed_history
+                    ),
+                )
+            )
+            logger.info(
+                "RESUME COMPLETED | fold=%s best_epoch=%d "
+                "best_val=%.8f amp_overflows=%d",
+                fold_name,
+                int(completed["best_epoch"]),
+                float(completed["best_validation_qlike"]),
+                recoveries,
+            )
+            return TrainingResult(
+                best_epoch=int(completed["best_epoch"]),
+                epochs_run=int(completed["epochs_run"]),
+                early_stopped=bool(completed["early_stopped"]),
+                best_validation_qlike=float(
+                    completed["best_validation_qlike"]
+                ),
+                history=completed_history,
+                numerical_failure=False,
+                failure_reason=None,
+                training_seconds=float(completed["training_seconds"]),
+                peak_gpu_memory_bytes=int(
+                    completed["peak_gpu_memory_bytes"]
+                ),
+                amp_overflow_recoveries=recoveries,
+            )
     if resume and last_path.exists():
         resumed_checkpoint = True
         state = torch.load(last_path, map_location=device, weights_only=False)
@@ -196,11 +298,36 @@ def train_model(
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         scaler.load_state_dict(state["grad_scaler"])
+        if "data_loader_generator_state" in state:
+            generator.set_state(state["data_loader_generator_state"])
+        else:
+            _reconstruct_loader_generator_state(
+                train_loader,
+                generator,
+                int(state["epoch"]),
+            )
+            logger.warning(
+                "RESUME LEGACY RNG | fold=%s reconstructed DataLoader "
+                "generator through epoch=%d",
+                fold_name,
+                int(state["epoch"]),
+            )
         start_epoch = int(state["epoch"]) + 1
         best_epoch = int(state["best_epoch"])
         best_validation = float(state["best_validation"])
         stale_epochs = int(state["stale_epochs"])
         history = list(state["history"])
+        amp_overflow_recoveries = int(
+            sum(
+                int(
+                    row.get(
+                        "amp_overflow_recoveries_epoch",
+                        row.get("amp_overflow_recovered", False),
+                    )
+                )
+                for row in history
+            )
+        )
         logger.info(
             "RESUME | fold=%s next_epoch=%d best_epoch=%d best_val=%.8f",
             fold_name,
@@ -286,6 +413,7 @@ def train_model(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "grad_scaler": scaler.state_dict(),
+            "data_loader_generator_state": generator.get_state(),
             **metadata,
         }
         torch.save(initial_state, last_path)
@@ -305,6 +433,7 @@ def train_model(
             train_sum = 0.0
             train_count = 0
             last_gradient_norm = float("nan")
+            epoch_amp_overflow_recoveries = 0
             actual_batches = min(
                 len(train_loader),
                 max_train_batches if max_train_batches is not None else len(train_loader),
@@ -342,34 +471,63 @@ def train_model(
                 should_step = batch_index % accumulation == 0 or batch_index == actual_batches
                 if should_step:
                     scaler.unscale_(optimizer)
-                    last_gradient_norm = float(
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), config.gradient_clip_norm
-                        ).item()
-                    )
                     gradients_finite = all(
                         parameter.grad is None
                         or bool(torch.isfinite(parameter.grad).all())
                         for parameter in model.parameters()
                     )
-                    if not gradients_finite or not np.isfinite(last_gradient_norm):
-                        logger.error(
-                            "NaN/Inf WARNING | fold=%s epoch=%d batch=%d gradient",
+                    if not gradients_finite and scaler.is_enabled():
+                        # GradScaler recorded found_inf during unscale_. Its
+                        # standard step/update path skips this optimizer step
+                        # and lowers the scale without changing model weights.
+                        try:
+                            scale_before, scale_after = _recover_amp_overflow(
+                                scaler, optimizer
+                            )
+                        except FloatingPointError as error:
+                            raise FloatingPointError(
+                                f"{error} at epoch={epoch} "
+                                f"batch={batch_index}"
+                            ) from error
+                        amp_overflow_recoveries += 1
+                        epoch_amp_overflow_recoveries += 1
+                        logger.warning(
+                            "AMP OVERFLOW RECOVERED | fold=%s epoch=%d "
+                            "batch=%d scale=%.1f->%.1f optimizer_step=skipped "
+                            "scheduler_step=skipped total=%d",
                             fold_name,
                             epoch,
                             batch_index,
+                            scale_before,
+                            scale_after,
+                            amp_overflow_recoveries,
                         )
+                    elif not gradients_finite:
                         raise FloatingPointError(
                             f"Gradient contains NaN/Inf at epoch={epoch} "
                             f"batch={batch_index} amp_scale={scaler.get_scale():.1f}"
                         )
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad(set_to_none=True)
-                    scheduler.step()
+                    else:
+                        last_gradient_norm = float(
+                            torch.nn.utils.clip_grad_norm_(
+                                model.parameters(),
+                                config.gradient_clip_norm,
+                            ).item()
+                        )
+                        if not np.isfinite(last_gradient_norm):
+                            raise FloatingPointError(
+                                "Gradient norm is NaN/Inf after successful "
+                                f"AMP unscale at epoch={epoch} "
+                                f"batch={batch_index}"
+                            )
+                        scaler.step(optimizer)
+                        scaler.update()
+                        optimizer.zero_grad(set_to_none=True)
+                        scheduler.step()
                 logger.info(
                     "TRAIN | fold=%s epoch=%03d/%03d batch=%04d/%04d "
-                    "train_qlike=%.8f lr=%.8g grad_norm=%s amp_scale=%.1f",
+                    "train_qlike=%.8f lr=%.8g grad_norm=%s amp_scale=%.1f "
+                    "amp_overflows=%d",
                     fold_name,
                     epoch,
                     max_epochs,
@@ -381,6 +539,7 @@ def train_model(
                     if np.isfinite(last_gradient_norm)
                     else "pending",
                     scaler.get_scale(),
+                    amp_overflow_recoveries,
                 )
             validation = evaluate_loader(
                 model, validation_loader, device, max_batches=max_eval_batches
@@ -400,6 +559,15 @@ def train_model(
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "gradient_norm": last_gradient_norm,
                 "amp_scale": scaler.get_scale(),
+                "amp_overflow_recovered": (
+                    epoch_amp_overflow_recoveries > 0
+                ),
+                "amp_overflow_recoveries_epoch": (
+                    epoch_amp_overflow_recoveries
+                ),
+                "amp_overflow_recoveries_cumulative": (
+                    amp_overflow_recoveries
+                ),
                 "improved": improved,
                 "stale_epochs": stale_epochs,
             }
@@ -415,6 +583,7 @@ def train_model(
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "grad_scaler": scaler.state_dict(),
+                "data_loader_generator_state": generator.get_state(),
                 **metadata,
             }
             torch.save(state, last_path)
@@ -473,6 +642,7 @@ def train_model(
         failure_reason=failure_reason,
         training_seconds=elapsed,
         peak_gpu_memory_bytes=peak,
+        amp_overflow_recoveries=amp_overflow_recoveries,
     )
     write_json(
         checkpoint_dir / "training_result.json",
