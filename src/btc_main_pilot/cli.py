@@ -17,6 +17,10 @@ from .event_aware_longtext_audit import (
     run_development_event_aware_longtext_audit,
     run_event_aware_longtext_smoke,
 )
+from .point_in_time_gate_diagnostic import (
+    run_development_point_in_time_gate_diagnostic,
+    run_point_in_time_gate_smoke,
+)
 from .regime_anchor_diagnostic import (
     run_development_regime_anchor_diagnostic,
     run_regime_anchor_smoke,
@@ -44,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
             "development-regime-anchor-diagnostic",
             "development-news-representation-audit",
             "development-event-aware-longtext-audit",
+            "development-point-in-time-gate-diagnostic",
         ],
         default="main-pilot",
         help="Development diagnostics run Fold 1-4 only and never open final test.",
@@ -143,6 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument(
+        "--silver-holdout-path",
+        default=(
+            "outputs/event_aware_longtext_audit/audit/"
+            "gpt_silver_holdout_366.csv"
+        ),
+        help="GPT-silver calibration CSV used by the adaptive gate diagnostic.",
+    )
+    parser.add_argument(
+        "--longtext-cache",
+        default=(
+            "outputs/event_aware_longtext_audit/cache/"
+            "longtext_embeddings.sqlite"
+        ),
+        help="Shared long-text embedding cache reused by the gate diagnostic.",
+    )
     return parser
 
 
@@ -161,6 +182,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "development-event-aware-longtext-audit": (
             "outputs/event_aware_longtext_audit"
+        ),
+        "development-point-in-time-gate-diagnostic": (
+            "outputs/point_in_time_gate_diagnostic"
         ),
     }
     output_dir = args.output_dir or default_outputs[args.profile]
@@ -271,6 +295,11 @@ def main(argv: list[str] | None = None) -> int:
             report = run_news_representation_smoke(config, logger)
         elif args.profile == "development-event-aware-longtext-audit":
             report = run_event_aware_longtext_smoke(config, logger)
+        elif (
+            args.profile
+            == "development-point-in-time-gate-diagnostic"
+        ):
+            report = run_point_in_time_gate_smoke(config, logger)
         else:
             report = run_smoke(config, logger, resume=args.resume)
         logger.info(
@@ -307,6 +336,15 @@ def main(argv: list[str] | None = None) -> int:
             config,
             logger,
             review_audit_dir=Path(args.review_audit_dir),
+            resume=args.resume,
+        )
+    elif args.profile == "development-point-in-time-gate-diagnostic":
+        run_development_point_in_time_gate_diagnostic(
+            config,
+            logger,
+            review_audit_dir=Path(args.review_audit_dir),
+            silver_path=Path(args.silver_holdout_path),
+            longtext_cache_path=Path(args.longtext_cache),
             resume=args.resume,
         )
     else:

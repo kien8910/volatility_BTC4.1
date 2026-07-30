@@ -288,3 +288,60 @@ and content streams; FinBERT slow/fast; and semantic/sentiment surprise norms.
 PCA components are fitted on each fold core only. PCA16 and the previous
 combined-PCA representation are intentionally excluded. Fold 5 and the final
 test are never opened.
+
+## Adaptive point-in-time gate diagnostic
+
+This follow-up profile is intentionally adaptive: its filter-family choices
+were made after inspecting the first GPT-silver development report. Therefore
+the 366 GPT-silver rows are calibration diagnostics, no longer an independent
+holdout, and remain non-expert proxy labels.
+
+The refined filter retains regulation/ETF, exchange/custody,
+macro/liquidity, and mining/energy context. Stablecoin/DeFi, security/hack,
+and broad other-crypto context are deferred pending more targeted labels. A
+single Bitcoin mention is recovered only when concrete event language is also
+present.
+
+For each Fold 1-4, a class-balanced logistic gate is fitted on core only. Its
+inputs use market RV lags through `t-1`, core-scaled daily news fields dated
+`t-1`, title semantic-surprise norm, and FinBERT sentiment-surprise norm. The
+logistic regularization is fixed at `C=0.1`. Hard thresholds are selected from
+`{0.2, 0.3, 0.4, 0.5}` on validation exact QLIKE; soft gates have no threshold.
+The predeclared normal routes are HAR, FinBERT, and chunk mean, while the spike
+route is title-only. A route is deployed OOS only when it beats HAR on
+validation by at least `1e-5`.
+
+Run the CPU-safe smoke test:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-point-in-time-gate-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/point_in_time_gate_diagnostic \
+  --smoke \
+  --no-resume
+```
+
+Run the full adaptive Fold 1-4 diagnostic on CUDA, reusing the prior long-text
+cache:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-point-in-time-gate-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/point_in_time_gate_diagnostic \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+The primary decision files are
+`outputs/point_in_time_gate_diagnostic/metrics/gate_screen.json`,
+`fold_metrics.csv`, `pooled_metrics.csv`, and `diagnostic_report.json`.
+Gate probabilities, raw routing weights, deployed weights, and component
+predictions are retained in the prediction CSVs. Fold 5, final test, MCS,
+five-seed evaluation, realized-spike oracle routing, and PatchTST retraining
+are excluded.

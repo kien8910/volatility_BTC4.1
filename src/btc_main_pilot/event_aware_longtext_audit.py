@@ -8,7 +8,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -269,6 +269,9 @@ def load_event_aware_articles(
     policy: EventAwarePolicy,
     logger: logging.Logger,
     smoke_early_stop: bool = False,
+    decision_fn: Callable[
+        [str, str, EventAwarePolicy], tuple[bool, int, str, bool]
+    ] = event_aware_decision,
 ) -> tuple[list[FilteredArticle], dict[str, Any]]:
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)
@@ -306,7 +309,7 @@ def load_event_aware_articles(
             continue
         title = clean_article_text(raw.get("canonical_title", ""))
         cleaned = clean_article_text(raw.get("canonical_article_text", ""))
-        keep, score, reason, price_recap = event_aware_decision(
+        keep, score, reason, price_recap = decision_fn(
             title, cleaned[:500], policy
         )
         reasons[reason] = reasons.get(reason, 0) + 1
@@ -608,6 +611,7 @@ def _build_variant_daily_frames(
     logger: logging.Logger,
     smoke: bool,
     end: str,
+    cache_path: Path | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
     encoder: OfflineBgeFinbertEncoder | DeterministicSmokeEncoder = (
         DeterministicSmokeEncoder(config.embedding_dim)
@@ -618,7 +622,9 @@ def _build_variant_daily_frames(
         None if smoke else getattr(encoder, "semantic_tokenizer", None)
     )
     cache = VariantVectorCache(
-        output_dir / "cache" / "longtext_embeddings.sqlite"
+        cache_path
+        if cache_path is not None
+        else output_dir / "cache" / "longtext_embeddings.sqlite"
     )
     try:
         title_texts = [f"Title: {article.title}" for article in articles]
@@ -1113,6 +1119,10 @@ def evaluate_filter_on_silver_holdout(
     silver_path: Path,
     policy: EventAwarePolicy,
     output_dir: Path,
+    decision_fn: Callable[
+        [str, str, EventAwarePolicy], tuple[bool, int, str, bool]
+    ] = event_aware_decision,
+    warning: str | None = None,
 ) -> dict[str, Any]:
     frame = pd.read_csv(silver_path, dtype=str, keep_default_na=False)
     strata = [
@@ -1125,7 +1135,7 @@ def evaluate_filter_on_silver_holdout(
     population = pd.to_numeric(frame["stratum_population_n"])
     frame["holdout_sampling_weight"] = population / sample_counts
     decisions = [
-        event_aware_decision(
+        decision_fn(
             str(row.canonical_title),
             str(row.cleaned_lead),
             policy,
@@ -1172,7 +1182,8 @@ def evaluate_filter_on_silver_holdout(
         "holdout_n": int(len(frame)),
         "overall": overall,
         "policy": asdict(policy),
-        "warning": (
+        "warning": warning
+        or (
             "Precision/recall are GPT-silver proxies, not expert-ground-truth "
             "estimates."
         ),
