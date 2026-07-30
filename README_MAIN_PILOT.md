@@ -345,3 +345,56 @@ Gate probabilities, raw routing weights, deployed weights, and component
 predictions are retained in the prediction CSVs. Fold 5, final test, MCS,
 five-seed evaluation, realized-spike oracle routing, and PatchTST retraining
 are excluded.
+
+## Locked-selection core+validation refit diagnostic
+
+This separate development profile measures whether the same selected text
+corrections and gates benefit from a final refit on more recent data. It first
+reproduces the point-in-time gate diagnostic exactly: fit on core, select the
+Gamma penalty, correction fallback, gate mode, and hard threshold on
+validation, then save the original test results under `before_refit/`.
+
+Those choices are then frozen. Fold-local semantic scaling and PCA, HAR,
+selected Gamma probes, and the logistic gate are fitted again using the valid
+core plus validation targets. The core-only spike threshold used during
+selection remains locked so that before/after normal and spike metrics use the
+same definition. Test dates are not used by preprocessing, refitting,
+calibration, fallback, or threshold selection. Results from this profile are
+post-hoc development diagnostics because the Fold 1-4 tests have already been
+inspected.
+
+Run the CPU-safe end-to-end smoke test:
+
+```bash
+PYTHONPATH=src python -u -m btc_main_pilot \
+  --profile development-point-in-time-refit-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/point_in_time_refit_diagnostic \
+  --smoke \
+  --no-resume
+```
+
+Run the full Fold 1-4 refit diagnostic on CUDA while reusing the long-text
+cache:
+
+```bash
+PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
+  --profile development-point-in-time-refit-diagnostic \
+  --market data/BTCUSDT_5min_2018_2025_present.csv \
+  --news data/news_clusters.json \
+  --output-dir outputs/point_in_time_refit_diagnostic \
+  --review-audit-dir outputs/news_representation_audit/audit \
+  --silver-holdout-path outputs/event_aware_longtext_audit/audit/gpt_silver_holdout_366.csv \
+  --longtext-cache outputs/event_aware_longtext_audit/cache/longtext_embeddings.sqlite \
+  --resume
+```
+
+Original test results are saved below `before_refit/`; locked-selection refit
+results are saved below `after_refit/`. The direct comparison files are
+`metrics/before_after_fold_metrics.csv`,
+`metrics/before_after_pooled_metrics.csv`, and
+`metrics/before_after_summary.json`. The complete report is
+`metrics/diagnostic_report.json`. Fold 5, final test, PatchTST retraining,
+MCS, five-seed evaluation, realized-spike oracle routing, and any test-based
+model selection remain excluded.

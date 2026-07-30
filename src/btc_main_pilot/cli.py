@@ -21,6 +21,10 @@ from .point_in_time_gate_diagnostic import (
     run_development_point_in_time_gate_diagnostic,
     run_point_in_time_gate_smoke,
 )
+from .point_in_time_refit_diagnostic import (
+    run_development_point_in_time_refit_diagnostic,
+    run_point_in_time_refit_smoke,
+)
 from .regime_anchor_diagnostic import (
     run_development_regime_anchor_diagnostic,
     run_regime_anchor_smoke,
@@ -49,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
             "development-news-representation-audit",
             "development-event-aware-longtext-audit",
             "development-point-in-time-gate-diagnostic",
+            "development-point-in-time-refit-diagnostic",
         ],
         default="main-pilot",
         help="Development diagnostics run Fold 1-4 only and never open final test.",
@@ -186,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
         "development-point-in-time-gate-diagnostic": (
             "outputs/point_in_time_gate_diagnostic"
         ),
+        "development-point-in-time-refit-diagnostic": (
+            "outputs/point_in_time_refit_diagnostic"
+        ),
     }
     output_dir = args.output_dir or default_outputs[args.profile]
     embedding_cache = args.embedding_cache
@@ -300,6 +308,11 @@ def main(argv: list[str] | None = None) -> int:
             == "development-point-in-time-gate-diagnostic"
         ):
             report = run_point_in_time_gate_smoke(config, logger)
+        elif (
+            args.profile
+            == "development-point-in-time-refit-diagnostic"
+        ):
+            report = run_point_in_time_refit_smoke(config, logger)
         else:
             report = run_smoke(config, logger, resume=args.resume)
         logger.info(
@@ -340,6 +353,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.profile == "development-point-in-time-gate-diagnostic":
         run_development_point_in_time_gate_diagnostic(
+            config,
+            logger,
+            review_audit_dir=Path(args.review_audit_dir),
+            silver_path=Path(args.silver_holdout_path),
+            longtext_cache_path=Path(args.longtext_cache),
+            resume=args.resume,
+        )
+    elif args.profile == "development-point-in-time-refit-diagnostic":
+        run_development_point_in_time_refit_diagnostic(
             config,
             logger,
             review_audit_dir=Path(args.review_audit_dir),

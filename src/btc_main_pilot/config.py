@@ -169,6 +169,7 @@ class MainPilotConfig:
             "development-news-representation-audit",
             "development-event-aware-longtext-audit",
             "development-point-in-time-gate-diagnostic",
+            "development-point-in-time-refit-diagnostic",
         }
         assert self.seed == 11
         assert self.pca_dim == 8
