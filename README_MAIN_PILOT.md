@@ -522,6 +522,9 @@ This development-only Fold 1-4 profile follows the slow-vector result with a
 strictly incremental architecture comparison:
 
 - `slow_calendar_control`: the prior 30-calendar-day slow Transformer;
+- `slow_calendar_no_slow`: a matched ablation with the same 30-day
+  Transformer, HAR anchor, market query, daily scalars, and event features,
+  but without the BGE-PCA8 slow state or FinBERT slow probabilities;
 - `slow_update_tokens`: one current slow-level token plus masked tokens only
   when retained news updates the slow state;
 - `slow_update_multiquery`: separate daily, weekly, and monthly HAR market
@@ -635,12 +638,14 @@ development from the untouched final holdout:
 
 The ablation set contains HAR-QLIKE (no text), linear FinBERT, directional
 event prototypes, identical fast-only and slow-only Transformer
-cross-attention controls, slow-update tokens, multi-query slow updates,
-point-in-time gating, and a FinBERT/slow blend. Econometric comparisons add
-Random Walk, HAR-OLS with Duan smearing, ARCH(5)-Normal, GARCH(1,1)-Normal,
-GJR-GARCH(1,1)-Student-t, and EGARCH(1,1)-Student-t. ARCH-family parameters
-are estimated only on each fold's core daily returns and are held fixed while
-the variance state is updated sequentially through validation/OOS.
+cross-attention controls, a matched calendar Transformer that removes only
+the BGE-PCA8 and FinBERT slow state, slow-update tokens, multi-query slow
+updates, point-in-time gating, and a FinBERT/slow blend. Econometric
+comparisons add Random Walk, HAR-OLS with Duan smearing, ARCH(5)-Normal,
+GARCH(1,1)-Normal, GJR-GARCH(1,1)-Student-t, and EGARCH(1,1)-Student-t.
+ARCH-family parameters are estimated only on each fold's core daily returns
+and are held fixed while the variance state is updated sequentially through
+validation/OOS.
 
 Install the new econometric dependency and run the CPU smoke test first:
 
@@ -674,8 +679,8 @@ PYTHONPATH=src TOKENIZERS_PARALLELISM=false python -u -m btc_main_pilot \
   --resume
 ```
 
-The full development command performs 125 neural fits (five trainable
-Transformer variants x five folds x five seeds); the final phase performs 25.
+The full development command performs 150 neural fits (six trainable
+Transformer variants x five folds x five seeds); the final phase performs 30.
 Linear probes are deterministic but are repeated to keep each seed directory
 self-contained; econometric models are fit once per fold. For a
 non-publishable pipeline check, use

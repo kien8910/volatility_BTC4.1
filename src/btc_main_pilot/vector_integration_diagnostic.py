@@ -487,34 +487,42 @@ def _eligible_dates(
 def _token_daily_matrix(
     news: FoldNewsFeatures,
     event: pd.DataFrame,
-    state: Literal["slow", "fast"],
+    state: Literal["slow", "fast", "no_slow"],
 ) -> tuple[np.ndarray, list[str]]:
-    semantic = (
-        news.semantic_slow if state == "slow" else news.semantic_fast
-    )
-    sentiment = (
-        news.sentiment_slow if state == "slow" else news.sentiment_fast
-    )
     event_aligned = event.reindex(news.dates)
     if event_aligned.isna().any().any():
         raise ValueError("Event feature dates do not align with news features")
+    state_blocks: list[np.ndarray] = []
+    state_names: list[str] = []
+    if state != "no_slow":
+        semantic = (
+            news.semantic_slow if state == "slow" else news.semantic_fast
+        )
+        sentiment = (
+            news.sentiment_slow if state == "slow" else news.sentiment_fast
+        )
+        state_blocks.extend([semantic, sentiment])
+        state_names.extend(
+            [
+                *[
+                    f"bge_{state}_pc_{i:02d}"
+                    for i in range(1, semantic.shape[1] + 1)
+                ],
+                *[
+                    f"finbert_{state}_{label}"
+                    for label in ("positive", "negative", "neutral")
+                ],
+            ]
+        )
     matrix = np.column_stack(
         [
-            semantic,
-            sentiment,
+            *state_blocks,
             news.daily_scalars,
             event_aligned.to_numpy(dtype=np.float32),
         ]
     ).astype(np.float64)
     names = [
-        *[
-            f"bge_{state}_pc_{i:02d}"
-            for i in range(1, semantic.shape[1] + 1)
-        ],
-        *[
-            f"finbert_{state}_{label}"
-            for label in ("positive", "negative", "neutral")
-        ],
+        *state_names,
         *[f"daily_scalar_{i:02d}" for i in range(news.daily_scalars.shape[1])],
         *event.columns.tolist(),
     ]
@@ -582,11 +590,13 @@ class HarVectorCrossAttention(nn.Module):
         self,
         config: MainPilotConfig,
         token_dim: int,
-        state: Literal["slow", "fast"],
+        state: Literal["slow", "fast", "no_slow"],
     ):
         super().__init__()
-        if state not in {"slow", "fast"}:
-            raise ValueError("Cross-attention state must be slow or fast")
+        if state not in {"slow", "fast", "no_slow"}:
+            raise ValueError(
+                "Cross-attention state must be slow, fast, or no_slow"
+            )
         self.state = state
         self.variant = f"transformer_cross_attention_{state}"
         d_model = config.d_model
@@ -665,7 +675,7 @@ def _build_transformer_datasets(
     news: FoldNewsFeatures,
     event: pd.DataFrame,
     fold: Fold,
-    state: Literal["slow", "fast"],
+    state: Literal["slow", "fast", "no_slow"],
     core_dates: list[pd.Timestamp],
     validation_dates: list[pd.Timestamp],
     test_dates: list[pd.Timestamp],
@@ -724,6 +734,15 @@ def _build_transformer_datasets(
     )
     metadata = {
         "state": state,
+        "slow_state_included": state == "slow",
+        "removed_state_features": (
+            [
+                "bge_slow_pca",
+                "finbert_slow_probabilities",
+            ]
+            if state == "no_slow"
+            else []
+        ),
         "token_dim": int(daily.shape[1]),
         "token_feature_names": token_names,
         "market_query_names": list(MARKET_QUERY_NAMES),

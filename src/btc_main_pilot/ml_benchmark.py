@@ -91,7 +91,7 @@ def _protocol_payload(
     seeds: tuple[int, ...],
 ) -> dict[str, Any]:
     return {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "profile": PROFILE,
         "development_folds": [asdict(fold) for fold in DEVELOPMENT_FOLDS],
         "final_holdout": asdict(FINAL_HOLDOUT_FOLD),

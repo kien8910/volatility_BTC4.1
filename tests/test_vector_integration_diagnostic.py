@@ -6,6 +6,7 @@ import torch
 from btc_main_pilot.cli import build_parser
 from btc_main_pilot.config import Fold, MainPilotConfig
 from btc_main_pilot.news import FilteredArticle
+from btc_main_pilot.preprocess import FoldNewsFeatures
 from btc_main_pilot.vector_integration_diagnostic import (
     CANDIDATES,
     EVENT_FAMILIES,
@@ -13,6 +14,7 @@ from btc_main_pilot.vector_integration_diagnostic import (
     HarVectorCrossAttention,
     VectorAttentionDataset,
     _eligible_dates,
+    _token_daily_matrix,
     _config_payload_hash,
     _validate_vector_scheduler,
     build_core_event_prototype_features,
@@ -114,14 +116,17 @@ def test_vector_dataset_uses_exactly_t_minus_30_through_t_minus_1():
 
 def test_transformer_cross_attention_is_exact_har_at_initialization():
     config = MainPilotConfig(profile=PROFILE)
-    for state in ("slow", "fast"):
-        model = HarVectorCrossAttention(config, token_dim=40, state=state)
+    for state in ("slow", "fast", "no_slow"):
+        token_dim = 29 if state == "no_slow" else 40
+        model = HarVectorCrossAttention(
+            config, token_dim=token_dim, state=state
+        )
         model.eval()
         anchor = torch.tensor([0.25, -0.75], dtype=torch.float64)
         output = model(
             {
                 "market_query": torch.randn(2, 7),
-                "news_tokens": torch.randn(2, 30, 40),
+                "news_tokens": torch.randn(2, 30, token_dim),
                 "har_anchor_log_rv": anchor,
             }
         )
@@ -129,6 +134,34 @@ def test_transformer_cross_attention_is_exact_har_at_initialization():
         assert torch.count_nonzero(output["delta_log_rv"]) == 0
         assert model.news_blocks
         assert model.cross_blocks
+
+
+def test_no_slow_calendar_tokens_remove_only_slow_state():
+    dates = pd.date_range("2020-01-01", periods=3, tz="UTC")
+    news = FoldNewsFeatures(
+        dates=dates,
+        semantic_slow=np.full((3, 8), 11.0),
+        semantic_fast=np.full((3, 8), 12.0),
+        sentiment_slow=np.full((3, 3), 13.0),
+        sentiment_fast=np.full((3, 3), 14.0),
+        daily_scalars=np.arange(33, dtype=np.float64).reshape(3, 11),
+        preprocessor_hash="test",
+        metadata={},
+    )
+    event = pd.DataFrame(
+        np.arange(18, dtype=np.float64)[None, :].repeat(3, axis=0),
+        index=dates,
+        columns=[f"event_{index:02d}" for index in range(18)],
+    )
+    matrix, names = _token_daily_matrix(news, event, "no_slow")
+    assert matrix.shape == (3, 29)
+    assert len(names) == 29
+    assert not any(name.startswith("bge_") for name in names)
+    assert not any(name.startswith("finbert_") for name in names)
+    np.testing.assert_array_equal(matrix[:, :11], news.daily_scalars)
+    np.testing.assert_array_equal(
+        matrix[:, 11:], event.to_numpy(dtype=np.float64)
+    )
 
 
 def test_authenticated_legacy_scheduler_allows_only_nontraining_changes(

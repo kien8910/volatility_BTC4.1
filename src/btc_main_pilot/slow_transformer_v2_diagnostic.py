@@ -79,6 +79,7 @@ SPIKE_QUANTILE = 0.90
 BLEND_ALPHA_GRID = (0.0, 0.25, 0.50, 0.75, 1.0)
 DEEP_CANDIDATES = (
     "slow_calendar_control",
+    "slow_calendar_no_slow",
     "fast_calendar_control",
     "slow_update_tokens",
     "slow_update_multiquery",
@@ -1325,6 +1326,19 @@ def _run_folds(
             targets,
             config,
         )
+        no_slow_control_sets = _build_transformer_datasets(
+            market,
+            news,
+            causal_event,
+            fold,
+            "no_slow",
+            core_dates,
+            validation_dates,
+            test_dates,
+            anchors,
+            targets,
+            config,
+        )
         update_sets = _build_update_datasets(
             market,
             news,
@@ -1344,11 +1358,21 @@ def _run_folds(
                 fold.name,
                 name,
             )
-            if name in {"slow_calendar_control", "fast_calendar_control"}:
-                state = "fast" if name.startswith("fast_") else "slow"
-                selected_sets = (
-                    fast_control_sets if state == "fast" else control_sets
-                )
+            if name in {
+                "slow_calendar_control",
+                "slow_calendar_no_slow",
+                "fast_calendar_control",
+            }:
+                state = {
+                    "slow_calendar_control": "slow",
+                    "slow_calendar_no_slow": "no_slow",
+                    "fast_calendar_control": "fast",
+                }[name]
+                selected_sets = {
+                    "slow": control_sets,
+                    "no_slow": no_slow_control_sets,
+                    "fast": fast_control_sets,
+                }[state]
                 core_set, validation_set, test_set, prep_meta = selected_sets
                 seed_everything(config.seed)
                 model: nn.Module = HarVectorCrossAttention(
@@ -1519,16 +1543,25 @@ def _run_folds(
                 "epoch_zero_exact_har": True,
                 "uses_update_mask": name not in {
                     "slow_calendar_control",
+                    "slow_calendar_no_slow",
                     "fast_calendar_control",
                 },
-                "news_state": (
-                    "fast" if name == "fast_calendar_control" else "slow"
+                "news_state": {
+                    "slow_calendar_control": "slow",
+                    "slow_calendar_no_slow": "no_slow",
+                    "fast_calendar_control": "fast",
+                }.get(name, "slow"),
+                "ablation_removed_components": (
+                    ["bge_slow_pca8", "finbert_slow_3"]
+                    if name == "slow_calendar_no_slow"
+                    else []
                 ),
                 "market_query_count": (
                     1
                     if name
                     in {
                         "slow_calendar_control",
+                        "slow_calendar_no_slow",
                         "fast_calendar_control",
                         "slow_update_tokens",
                     }
