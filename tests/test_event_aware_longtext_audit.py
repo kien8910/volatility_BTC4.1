@@ -1,20 +1,29 @@
+import logging
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
+from btc_main_pilot.config import MainPilotConfig
 from btc_main_pilot.event_aware_longtext_audit import (
     CONTEXT_FAMILIES,
     EventAwarePolicy,
     REPRESENTATION_NAMES,
     VariantVectorCache,
+    _embed_fixed_variant,
     _screen,
     _token_budgeted_text,
+    _variant_hash,
     _weighted_binary_metrics,
     event_aware_decision,
     fit_event_aware_policy,
 )
-from btc_main_pilot.news import DeterministicSmokeEncoder, FilteredArticle
+from btc_main_pilot.news import (
+    DeterministicSmokeEncoder,
+    FilteredArticle,
+    OfflineBgeFinbertEncoder,
+)
 
 
 def _policy(*families: str) -> EventAwarePolicy:
@@ -140,6 +149,76 @@ def test_deterministic_encoder_split_methods_match_combined():
     semantic, sentiment = encoder.encode(texts)
     np.testing.assert_array_equal(semantic, encoder.encode_semantic(texts))
     np.testing.assert_array_equal(sentiment, encoder.encode_sentiment(texts))
+
+
+def test_offline_encoder_does_not_eagerly_load_model_weights(monkeypatch):
+    import transformers
+
+    class FakeTokenizer:
+        pass
+
+    monkeypatch.setattr(
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: FakeTokenizer(),
+    )
+
+    def fail_if_loaded(*args, **kwargs):
+        raise AssertionError("model weights were loaded eagerly")
+
+    monkeypatch.setattr(
+        transformers.AutoModel, "from_pretrained", fail_if_loaded
+    )
+    monkeypatch.setattr(
+        transformers.AutoModelForSequenceClassification,
+        "from_pretrained",
+        fail_if_loaded,
+    )
+    encoder = OfflineBgeFinbertEncoder(
+        MainPilotConfig(), torch.device("cpu")
+    )
+    assert isinstance(encoder.semantic_tokenizer, FakeTokenizer)
+    assert encoder.semantic_model is None
+    assert encoder.sentiment_model is None
+
+
+def test_fixed_variant_full_cache_does_not_call_encoder(tmp_path: Path):
+    article = FilteredArticle(
+        cluster_id="cached",
+        timestamp=pd.Timestamp("2022-01-01", tz="UTC"),
+        title="Bitcoin event",
+        cleaned_text="A cached Bitcoin event.",
+        source="source",
+        relevance=2,
+    )
+    text = article.encoder_text
+    representation = "title_lead_token_budget_512"
+    content_hash = _variant_hash(article, representation, text)
+    expected = np.arange(8, dtype=np.float32)
+    cache = VariantVectorCache(tmp_path / "full-cache.sqlite")
+    cache.put(content_hash, "model", representation, expected)
+    cache.commit()
+
+    class EncoderMustNotRun:
+        def encode_semantic(self, texts):
+            raise AssertionError("full cache unexpectedly invoked encoder")
+
+    try:
+        vectors, audit = _embed_fixed_variant(
+            [article],
+            [text],
+            cache,
+            EncoderMustNotRun(),
+            "model",
+            representation,
+            8,
+            4,
+            logging.getLogger("cache-first-test"),
+        )
+    finally:
+        cache.close()
+    np.testing.assert_array_equal(vectors[0], expected)
+    assert audit == {"cache_hits": 1, "cache_misses": 0}
 
 
 def test_representation_screen_handles_a_smoke_block_without_spike_days():

@@ -716,6 +716,13 @@ spike/normal QLIKE, RMSE/MAE/MSE/median absolute error on log-RV, R-squared,
 log-RV correlation, directional accuracy, bias, model ranks, and deltas
 against HAR-QLIKE.
 
+The long-text SQLite cache is checked before loading BGE or FinBERT model
+weights. A fully populated cache therefore supports an offline benchmark;
+the locked model weights are requested only when the corresponding
+representation has at least one cache miss. The BGE tokenizer must remain in
+the local Hugging Face cache because it defines the exact token-budgeted text
+and cache key.
+
 AMP overflow is handled through PyTorch GradScaler's standard recovery path:
 the affected optimizer/scheduler step is skipped, the scale is reduced, and
 the recovery count is logged and saved. A genuinely non-finite loss or an

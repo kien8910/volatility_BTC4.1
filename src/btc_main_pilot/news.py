@@ -557,40 +557,104 @@ class EmbeddingCache:
 
 class OfflineBgeFinbertEncoder:
     def __init__(self, config: MainPilotConfig, device: torch.device):
-        from transformers import AutoModel, AutoModelForSequenceClassification, AutoTokenizer
+        from transformers import AutoTokenizer
 
         self.config = config
         self.device = device
+        # The tokenizer is required to reconstruct the exact token-budgeted
+        # text and therefore the SQLite cache key. Model weights are loaded
+        # lazily only when a representation has an actual cache miss.
         self.semantic_tokenizer = AutoTokenizer.from_pretrained(
             config.semantic_model, local_files_only=True
         )
-        self.semantic_model = AutoModel.from_pretrained(
-            config.semantic_model, local_files_only=True
-        ).to(device)
-        self.sentiment_tokenizer = AutoTokenizer.from_pretrained(
-            config.sentiment_model, local_files_only=True
+        self.semantic_model: torch.nn.Module | None = None
+        self.sentiment_tokenizer: Any | None = None
+        self.sentiment_model: torch.nn.Module | None = None
+        self.output_order: list[int] | None = None
+
+    def _load_semantic_model(self) -> torch.nn.Module:
+        if self.semantic_model is None:
+            from transformers import AutoModel
+
+            try:
+                model = AutoModel.from_pretrained(
+                    self.config.semantic_model, local_files_only=True
+                ).to(self.device)
+            except OSError as error:
+                raise OSError(
+                    "BGE embedding cache has at least one miss, but the "
+                    f"offline weights for {self.config.semantic_model} are "
+                    "not available. Supply a complete long-text SQLite "
+                    "cache or install the locked Hugging Face model cache."
+                ) from error
+            model.eval()
+            for parameter in model.parameters():
+                parameter.requires_grad_(False)
+            self.semantic_model = model
+        return self.semantic_model
+
+    def _load_sentiment_model(
+        self,
+    ) -> tuple[Any, torch.nn.Module, list[int]]:
+        if self.sentiment_model is None:
+            from transformers import (
+                AutoModelForSequenceClassification,
+                AutoTokenizer,
+            )
+
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    self.config.sentiment_model, local_files_only=True
+                )
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    self.config.sentiment_model, local_files_only=True
+                ).to(self.device)
+            except OSError as error:
+                raise OSError(
+                    "FinBERT embedding cache has at least one miss, but the "
+                    f"offline weights for {self.config.sentiment_model} are "
+                    "not available. Supply a complete long-text SQLite "
+                    "cache or install the locked Hugging Face model cache."
+                ) from error
+            model.eval()
+            for parameter in model.parameters():
+                parameter.requires_grad_(False)
+            labels = {
+                int(index): str(label).lower()
+                for index, label in model.config.id2label.items()
+            }
+            output_order = [
+                next(
+                    index
+                    for index, label in labels.items()
+                    if "positive" in label
+                ),
+                next(
+                    index
+                    for index, label in labels.items()
+                    if "negative" in label
+                ),
+                next(
+                    index
+                    for index, label in labels.items()
+                    if "neutral" in label
+                ),
+            ]
+            self.sentiment_tokenizer = tokenizer
+            self.sentiment_model = model
+            self.output_order = output_order
+        assert self.sentiment_tokenizer is not None
+        assert self.sentiment_model is not None
+        assert self.output_order is not None
+        return (
+            self.sentiment_tokenizer,
+            self.sentiment_model,
+            self.output_order,
         )
-        self.sentiment_model = AutoModelForSequenceClassification.from_pretrained(
-            config.sentiment_model, local_files_only=True
-        ).to(device)
-        self.semantic_model.eval()
-        self.sentiment_model.eval()
-        for parameter in list(self.semantic_model.parameters()) + list(
-            self.sentiment_model.parameters()
-        ):
-            parameter.requires_grad_(False)
-        labels = {
-            int(index): str(label).lower()
-            for index, label in self.sentiment_model.config.id2label.items()
-        }
-        self.output_order = [
-            next(index for index, label in labels.items() if "positive" in label),
-            next(index for index, label in labels.items() if "negative" in label),
-            next(index for index, label in labels.items() if "neutral" in label),
-        ]
 
     @torch.inference_mode()
     def encode_semantic(self, texts: list[str]) -> np.ndarray:
+        semantic_model = self._load_semantic_model()
         semantic_inputs = self.semantic_tokenizer(
             texts,
             padding=True,
@@ -599,7 +663,7 @@ class OfflineBgeFinbertEncoder:
             return_tensors="pt",
         )
         semantic_inputs = {key: value.to(self.device) for key, value in semantic_inputs.items()}
-        semantic_output = self.semantic_model(**semantic_inputs).last_hidden_state[:, 0]
+        semantic_output = semantic_model(**semantic_inputs).last_hidden_state[:, 0]
         semantic_output = torch.nn.functional.normalize(semantic_output, p=2, dim=-1)
         if semantic_output.shape[1] != self.config.embedding_dim:
             raise AssertionError(
@@ -609,7 +673,10 @@ class OfflineBgeFinbertEncoder:
 
     @torch.inference_mode()
     def encode_sentiment(self, texts: list[str]) -> np.ndarray:
-        sentiment_inputs = self.sentiment_tokenizer(
+        sentiment_tokenizer, sentiment_model, output_order = (
+            self._load_sentiment_model()
+        )
+        sentiment_inputs = sentiment_tokenizer(
             texts,
             padding=True,
             truncation=True,
@@ -619,8 +686,8 @@ class OfflineBgeFinbertEncoder:
         sentiment_inputs = {
             key: value.to(self.device) for key, value in sentiment_inputs.items()
         }
-        logits = self.sentiment_model(**sentiment_inputs).logits
-        probabilities = torch.softmax(logits, dim=-1)[:, self.output_order]
+        logits = sentiment_model(**sentiment_inputs).logits
+        probabilities = torch.softmax(logits, dim=-1)[:, output_order]
         return probabilities.float().cpu().numpy()
 
     def encode(self, texts: list[str]) -> tuple[np.ndarray, np.ndarray]:

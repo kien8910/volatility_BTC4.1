@@ -291,6 +291,19 @@ def _embed_articles(
         )
     finally:
         cache.close()
+    semantic_weights_loaded = bool(
+        not smoke and getattr(encoder, "semantic_model", None) is not None
+    )
+    sentiment_weights_loaded = bool(
+        not smoke and getattr(encoder, "sentiment_model", None) is not None
+    )
+    if not smoke:
+        logger.info(
+            "CACHE FIRST | BGE weights_loaded=%s FinBERT "
+            "weights_loaded=%s",
+            semantic_weights_loaded,
+            sentiment_weights_loaded,
+        )
     semantics = np.asarray(semantics, dtype=np.float64)
     ensure_finite("article semantic embeddings", semantics)
     daily = aggregate_daily_news(
@@ -307,6 +320,9 @@ def _embed_articles(
             "title_lead_token_budget_512",
             "finbert_title_lead_token_budget_512",
         ],
+        "cache_first_model_loading": True,
+        "semantic_model_weights_loaded": semantic_weights_loaded,
+        "sentiment_model_weights_loaded": sentiment_weights_loaded,
         "article_vectors_returned_for_core_only_event_prototypes": True,
     }
 
